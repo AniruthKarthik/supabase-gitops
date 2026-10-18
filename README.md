@@ -1,8 +1,8 @@
-# Supabase GitOps & Disaster Recovery Template
+# Supabase Database DevOps & CI/CD Workflow Template
 
-A production-ready **Database-as-Code (GitOps)** and disaster recovery template for **Supabase PostgreSQL**.
+A production-ready **Database-as-Code (GitOps)** and DevOps automation template for **Supabase PostgreSQL**.
 
-Provides safe bi-directional synchronization between GitHub and Supabase:
+Provides reliable bi-directional synchronization between GitHub and Supabase:
 - **Deploy forward**: Preview and apply version-controlled SQL migrations with automated pre-migration safety backups.
 - **Capture drift**: Pull schema changes made in the Supabase Dashboard back into Git migration files using shadow database verification.
 - **Automated backups**: Weekly encrypted full-database backups (schema + data) with AES-256 cipher, zero data leakage in Git, and 90-day retention.
@@ -10,10 +10,10 @@ Provides safe bi-directional synchronization between GitHub and Supabase:
 
 ---
 
-## 🚀 3-Minute Quickstart
+## Quickstart
 
 ### Step 1: Use this template
-Click the green **"Use this template"** button at the top of this repository (or clone it).
+Click the **"Use this template"** button at the top of this repository (or clone it).
 
 ### Step 2: Configure GitHub Secrets
 Go to your repo: **Settings > Secrets and variables > Actions > New repository secret** and add:
@@ -28,17 +28,17 @@ Go to your repo: **Settings > Secrets and variables > Actions > New repository s
 
 ### Step 3: Customize or Deploy
 - Modify or replace the starter migration in `supabase/migrations/20261019000000_initial.sql`.
-- Run the **Deploy database migrations** workflow to apply it to your Supabase project!
+- Run the **Deploy database migrations** workflow to apply it to your Supabase project.
 
 ---
 
-## 📁 Repository Structure
+## Repository Structure
 
 ```
 .github/workflows/
   deploy-migrations.yml          # Forward: Apply local migrations → Supabase
   capture-supabase-migrations.yml # Reverse: Capture dashboard schema drift → local migration
-  backup-database.yml            # Disaster Recovery: Weekly encrypted full DB backup
+  backup-database.yml            # Backups: Weekly encrypted full DB backup
   lint-migrations.yml            # CI: Test migration syntax & execution on Pull Requests
   generate-types.yml             # DX: Generate TypeScript definitions (database.types.ts)
   drift-alert.yml                # Monitoring: Scheduled weekly schema drift detection
@@ -51,7 +51,7 @@ supabase/
 
 ---
 
-## ⚡ Workflows Overview
+## Workflows Overview
 
 ### 1. Deploy Database Migrations (`deploy-migrations.yml`)
 Pushes **local** migration files to the **remote** Supabase database.
@@ -115,7 +115,7 @@ Runs weekly on Monday at 04:00 UTC to check if uncaptured dashboard changes were
 
 ---
 
-## 💻 Local Development
+## Local Development
 
 Local development requires Docker and Supabase CLI:
 
@@ -135,6 +135,6 @@ supabase stop
 
 ---
 
-## 📜 License
+## License
 
 MIT License. Free to use for personal, academic, and commercial projects.
