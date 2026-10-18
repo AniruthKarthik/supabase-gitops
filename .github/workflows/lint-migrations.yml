@@ -1,0 +1,59 @@
+name: Test and lint migrations
+
+on:
+  pull_request:
+    paths:
+      - 'supabase/migrations/**'
+      - '.github/workflows/lint-migrations.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Verify migration syntax and execution
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate migration file naming convention
+        run: |
+          set -euo pipefail
+          invalid=0
+          for f in supabase/migrations/*.sql; do
+            [ -e "$f" ] || continue
+            filename=$(basename "$f")
+            if [[ ! "$filename" =~ ^[0-9]{14}_[a-z0-9_]+\.sql$ ]]; then
+              echo "::error::Invalid migration filename: $filename (must match YYYYMMDDHHMMSS_name.sql)"
+              invalid=1
+            fi
+          done
+          [ "$invalid" -eq 0 ] || exit 1
+
+      - name: Start temporary PostgreSQL test container
+        run: |
+          set -euo pipefail
+          docker run --name pg-test -e POSTGRES_PASSWORD=postgres -p 5432:5432 -d postgres:17-alpine
+          until docker exec pg-test pg_isready -U postgres >/dev/null 2>&1; do
+            sleep 1
+          done
+          echo "PostgreSQL test container ready."
+
+      - name: Test apply migrations sequentially
+        run: |
+          set -euo pipefail
+          for f in $(ls supabase/migrations/*.sql | sort); do
+            echo "Applying: $f"
+            docker exec -i pg-test psql -U postgres -d postgres -v ON_ERROR_STOP=1 < "$f"
+          done
+          echo "All migrations applied successfully without errors."
+
+      - name: Stop test container
+        if: always()
+        run: |
+          docker stop pg-test >/dev/null 2>&1 || true
+          docker rm pg-test >/dev/null 2>&1 || true

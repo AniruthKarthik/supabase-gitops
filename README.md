@@ -1,267 +1,140 @@
-# Supabase GitOps Template
+# Supabase GitOps & Disaster Recovery Template
 
-Supabase PostgreSQL schema and migration history for Supabase PostgreSQL.
+A production-ready **Database-as-Code (GitOps)** and disaster recovery template for **Supabase PostgreSQL**.
+
+Provides safe bi-directional synchronization between GitHub and Supabase:
+- **Deploy forward**: Preview and apply version-controlled SQL migrations with automated pre-migration safety backups.
+- **Capture drift**: Pull schema changes made in the Supabase Dashboard back into Git migration files using shadow database verification.
+- **Automated backups**: Weekly encrypted full-database backups (schema + data) with AES-256 cipher, zero data leakage in Git, and 90-day retention.
+- **CI/CD Quality**: Automated PR migration testing, schema drift alerts, and optional TypeScript type generation.
 
 ---
 
-## Repository layout
+## 🚀 3-Minute Quickstart
+
+### Step 1: Use this template
+Click the green **"Use this template"** button at the top of this repository (or clone it).
+
+### Step 2: Configure GitHub Secrets
+Go to your repo: **Settings > Secrets and variables > Actions > New repository secret** and add:
+
+| Secret | Description | Example / Format |
+|---|---|---|
+| `SUPABASE_DB_URL` | *(Required)* Direct PostgreSQL connection string | `postgresql://postgres.<ref>:<password>@<host>:5432/postgres` |
+| `BACKUP_ENCRYPTION_KEY` | *(Required)* Master password for encrypted backups | `MyStrongPassword2026!#` |
+| `WEBHOOK_URL` | *(Optional)* Discord or Slack webhook for notifications | `https://discord.com/api/webhooks/...` |
+
+> **Note on `SUPABASE_DB_URL`**: Use the **Direct Connection** or **Session Mode Pooler** string from your Supabase Dashboard (**Project Settings > Database > Connection string**). Do not use the transaction pooler on port 6543.
+
+### Step 3: Customize or Deploy
+- Modify or replace the starter migration in `supabase/migrations/20261019000000_initial.sql`.
+- Run the **Deploy database migrations** workflow to apply it to your Supabase project!
+
+---
+
+## 📁 Repository Structure
 
 ```
 .github/workflows/
-  deploy-migrations.yml          # Manually deploy local migrations → remote DB
-  capture-supabase-migrations.yml # Manually capture dashboard changes → local files
-  backup-database.yml            # Weekly automated + manual encrypted full DB backup
+  deploy-migrations.yml          # Forward: Apply local migrations → Supabase
+  capture-supabase-migrations.yml # Reverse: Capture dashboard schema drift → local migration
+  backup-database.yml            # Disaster Recovery: Weekly encrypted full DB backup
+  lint-migrations.yml            # CI: Test migration syntax & execution on Pull Requests
+  generate-types.yml             # DX: Generate TypeScript definitions (database.types.ts)
+  drift-alert.yml                # Monitoring: Scheduled weekly schema drift detection
 supabase/
   config.toml                    # Supabase CLI project configuration
+  seed.sql                       # Sample seed data for local development
   migrations/
-    20261019000000_initial.sql   # Initial schema (profiles, RLS)
+    20261019000000_initial.sql   # Starter migration (profiles table with RLS)
 ```
 
 ---
 
-## GitHub Actions workflows
+## ⚡ Workflows Overview
 
-### 1. Deploy database migrations (`deploy-migrations.yml`)
-
+### 1. Deploy Database Migrations (`deploy-migrations.yml`)
 Pushes **local** migration files to the **remote** Supabase database.
 
-| Trigger | Manual (`workflow_dispatch`) |
-|---|---|
-| Input | `confirm_deploy: true` |
-| Secret | `SUPABASE_DB_URL` |
-| Branch | `master` |
+- **Trigger**: Manual (`workflow_dispatch`) with confirmation `deploy`.
+- **Pre-migration Safety**: Automatically creates a schema backup artifact before applying any change.
+- **Dry-run Preview**: Shows a dry-run preview of pending migrations.
+- **Verification**: Outputs a post-deploy verification table comparing local and remote migration versions.
 
 ---
 
-### 2. Capturing schema drift from the Supabase dashboard
+### 2. Capture Schema Drift (`capture-supabase-migrations.yml`)
+Brings visual schema changes made directly in the **Supabase Dashboard** back into version control.
 
-> **`capture-supabase-migrations.yml`** — the reverse direction.
+- **Trigger**: Manual (`workflow_dispatch`) with confirmation `capture`.
+- **Pre-flight Check**: Classifies remote migration history vs. local files into 4 baseline cases (A, B, C, D).
+- **Shadow Database**: Uses a temporary Docker PostgreSQL shadow database to compute a clean consolidated schema diff.
+- **Safety Validator**: Rejects data manipulation statements (`INSERT`, `UPDATE`, `DELETE`) to ensure no user data is committed to Git. Warns on destructive operations (`DROP TABLE`).
+- **Linear Git History**: Re-bases and pushes the new migration file directly to `master`.
 
-Use this when you modify the database schema directly in the Supabase dashboard
-and want to bring those changes back into the repository as a migration file.
-
-#### What it can recover
-
-| Situation | Outcome |
-|---|---|
-| **Case A** — Dashboard changes are in the remote history but have no local file | Generates a new consolidated diff migration using `supabase db pull` |
-| **Case D** — Local files already match the remote history | Exits successfully, no commit |
-
-#### What it cannot recover
-
-| Situation | Outcome |
-|---|---|
-| **Case B** — Remote history contains versions whose original SQL is not stored | **Stops and explains reconciliation options** — the original DDL is gone and cannot be reconstructed from a schema diff |
-| **Case C** — Both local files and remote history have extra entries the other side lacks | **Stops and requires manual reconciliation** — the baseline is ambiguous |
-
-> **Important:** The generated migration is a *consolidated schema diff* — the SQL
-> needed to transform the last local baseline into the current remote state.
-> It does **not** reproduce the original sequence of individual dashboard changes.
-> Always review the generated file before running the deploy workflow.
-
-#### Required GitHub secret
-
-Add a secret named **`SUPABASE_DB_URL`** at:
-
-```
-Repository > Settings > Secrets and variables > Actions > New repository secret
-```
-
-Use the **Direct Connection** or **Session Pooler** string from your Supabase
-project dashboard (Database > Connect). **Do not use the Transaction Pooler
-(port 6543)** — the Supabase CLI needs a persistent session.
-
-```
-postgresql://postgres.<project-ref>:<password>@<host>:5432/postgres
-```
-
-The secret is used only inside the workflow runner and is never printed to logs
-or committed to the repository.
-
-#### How to trigger
-
-1. Open **Actions** in your GitHub repository.
-2. Select **Capture database migrations** from the left sidebar.
-3. Click **Run workflow**.
-4. In the **confirm** field, type exactly: `capture`
-5. Click **Run workflow**.
-
-The workflow will:
-
-1. Check out `master`.
-2. Run `supabase migration list --db-url` to compare local files with the remote
-   migration history table.
-3. Query the remote history table to verify that SQL is stored for each
-   remote-only version (distinguishing Case A from Case B).
-4. If safe (Case A), run `supabase db pull --db-url` to generate a new
-   migration file in `supabase/migrations/`.
-5. Validate the generated SQL (must be non-empty, schema-only, inside
-   `supabase/migrations/`).
-6. Commit and push only the new file to `master`.
-7. If nothing changed or the situation requires manual intervention, exit with
-   a clear explanation.
-
-#### After a successful capture
-
-The new migration file is committed to `master` automatically. Before deploying
-it to another environment, review the SQL:
-
-```
-supabase/migrations/<new-timestamp>_<name>.sql
-```
-
-When you are satisfied, trigger **Deploy database migrations** to apply it.
-
-#### Case B — what to do when original SQL is missing
-
-If the workflow fails with a Case B error, the remote migration history contains
-an entry whose SQL was never stored (e.g. a change made via `psql` directly or
-an older dashboard path). You have three options:
-
-**Option 1 — Write the SQL by hand (recommended)**
-
-```bash
-# Create the file locally
-cat > supabase/migrations/<version>_<description>.sql << 'SQL'
--- Reconstruct the change manually
-ALTER TABLE ...;
-SQL
-
-# Register it in the remote history
-supabase migration repair \
-  --status applied <version> \
-  --db-url "$SUPABASE_DB_URL"
-
-# Commit and push, then re-trigger the capture workflow
-git add supabase/migrations/
-git commit -m "fix(db): add missing migration file for version <version>"
-git push
-```
-
-**Option 2 — Placeholder (history-only)**
-
-Use this when you cannot reconstruct the SQL but want to keep the history table
-and local files in sync:
-
-```bash
-supabase migration repair --status applied <version> --db-url "$SUPABASE_DB_URL"
-
-cat > supabase/migrations/<version>_placeholder.sql << 'SQL'
--- Placeholder: this migration was applied directly via the Supabase dashboard
--- or psql on <date>. The original SQL was not captured. Schema state at this
--- point: <brief description>
-SQL
-
-git add supabase/migrations/
-git commit -m "fix(db): add placeholder for uncaptured migration <version>"
-git push
-```
-
-After either option, re-trigger the capture workflow.
-
-#### Case C — what to do when the baseline is ambiguous
-
-This happens when local files and the remote history have diverged in both
-directions simultaneously. Fix it locally:
-
-```bash
-# Check the current state
-supabase migration list --db-url "$SUPABASE_DB_URL"
-
-# For each remote version missing from your local files:
-#   Either add the file, or mark the entry as reverted if it should not exist:
-supabase migration repair --status reverted <version> --db-url "$SUPABASE_DB_URL"
-
-# For each local file not on the remote:
-#   Either push it with the deploy workflow, or remove it from the repository.
-```
-
-#### Safety constraints
-
-- This workflow **never** runs `supabase db push`, `DROP`, `TRUNCATE`, or any
-  SQL that modifies production data.
-- It **never** commits the connection string, password, or any secret.
-- It **never** overwrites or deletes existing migration files.
-- It is **idempotent**: repeated runs with no additional dashboard changes will
-  not create empty migrations or duplicate commits.
-- Concurrent executions are serialised by a dedicated concurrency group
 ---
 
-### 3. Encrypted database backups (`backup-database.yml`)
+### 3. Encrypted Database Backups (`backup-database.yml`)
+Creates a full, self-contained snapshot of the remote PostgreSQL database (**schema + all table rows**).
 
-Creates a complete, self-contained snapshot of the remote PostgreSQL database
-(**schema + all row data**), encrypts it with AES-256 using your secret key,
-and stores it as a downloadable GitHub Actions artifact (retained for 90 days).
+- **Trigger**: Weekly automated schedule (every Sunday at 02:00 UTC) or manual on-demand trigger.
+- **Zero-Trust Encryption**: Uses `postgres:17-alpine` Docker container to run `pg_dump`, streaming output directly into `gpg` with **AES-256 symmetric encryption**.
+- **Clean Git**: Backups are stored as downloadable **GitHub Actions Artifacts** (retained for 90 days), ensuring zero sensitive data leaks into Git history.
 
-| Trigger | Schedule (Weekly every Sunday at 02:00 UTC) **or** Manual (`workflow_dispatch`) |
-|---|---|
-| Secret | `SUPABASE_DB_URL`, `BACKUP_ENCRYPTION_KEY` |
-| Encryption | AES-256 symmetric cipher via `gpg` |
-| Output | `supabase_backup_<YYYYMMDD_HHMMSS>.sql.gpg` |
-| Retention | 90 days (GitHub Actions Artifact) |
-
-#### Setting up the encryption secret
-
-1. Go to: **Repository > Settings > Secrets and variables > Actions > New repository secret**
-2. Name: `BACKUP_ENCRYPTION_KEY`
-3. Value: *A strong password of your choice*
-
-> When triggered manually, you can optionally supply an override password in the workflow inputs. For automated weekly runs, the `BACKUP_ENCRYPTION_KEY` secret is used.
-
-#### How to download and restore the backup
-
-1. In GitHub, go to **Actions > Backup database > (latest run) > Artifacts**.
-2. Download the artifact (e.g. `encrypted-database-backup-20261019_020000.zip`).
-3. Unzip the file to find `supabase_backup_<timestamp>.sql.gpg`.
-
-**Step 1 — Decrypt the SQL using your password:**
+#### How to restore any backup:
 ```bash
+# 1. Download the artifact from GitHub Actions and decrypt with your password:
 gpg --decrypt supabase_backup_<timestamp>.sql.gpg > rebuild.sql
+
+# 2. Rebuild your database anywhere:
+# Option A: Paste rebuild.sql into any Supabase Dashboard SQL Editor
+# Option B: Feed into any Postgres instance via terminal:
+psql "<TARGET_DATABASE_URL>" < rebuild.sql
 ```
-
-**Step 2 — Restore the database:**
-
-- **Option A (Supabase Dashboard / SQL Editor)**: Open `rebuild.sql`, copy all text, paste it into the SQL Editor of any Supabase project, and click **Run**.
-- **Option B (Terminal to any PostgreSQL database)**:
-  ```bash
-  psql "<YOUR_TARGET_DATABASE_URL>" < rebuild.sql
-  ```
-- **Option C (Local Docker PostgreSQL)**:
-  ```bash
-  docker run --name test-db -e POSTGRES_PASSWORD=postgres -p 5432:5432 -d postgres:17
-  psql "postgresql://postgres:postgres@localhost:5432/postgres" < rebuild.sql
-  ```
 
 ---
 
-## Local development
+### 4. PR Migration Testing (`lint-migrations.yml`)
+Runs automatically on every Pull Request modifying `supabase/migrations/**`:
+- Verifies migration filenames follow the `YYYYMMDDHHMMSS_name.sql` standard.
+- Spins up an ephemeral PostgreSQL 17 test container.
+- Applies all migrations in sequence to verify syntax, foreign keys, and constraint integrity before merging.
 
-Local Supabase development requires Docker. The capture workflow also requires
-Docker on the runner (Ubuntu GitHub-hosted runners include it by default). Your
-local Arch Linux development machine is not affected — the workflow runs only in
-GitHub Actions.
+---
+
+### 5. Automated TypeScript Types (`generate-types.yml`)
+Generates complete TypeScript definitions directly from your remote database schema:
+- Produces `types/database.types.ts`.
+- Gives your frontend/backend Supabase client 100% end-to-end type safety and autocomplete.
+
+---
+
+### 6. Scheduled Drift Alerting (`drift-alert.yml`)
+Runs weekly on Monday at 04:00 UTC to check if uncaptured dashboard changes were made.
+- Posts a warning in GitHub Actions if schema drift is detected, reminding your team to capture migrations.
+
+---
+
+## 💻 Local Development
+
+Local development requires Docker and Supabase CLI:
 
 ```bash
-# Start the local Supabase stack
+# 1. Start local Supabase stack (applies migrations and seed.sql automatically)
 supabase start
 
-# Apply migrations to the local database
-supabase db push
+# 2. Check local database status
+supabase status
 
-# Check migration state against the remote
-supabase migration list --db-url "$SUPABASE_DB_URL"
+# 3. Create a new migration file
+supabase migration new <feature_name>
+
+# 4. Stop local stack
+supabase stop
 ```
 
 ---
 
-## Migration naming convention
+## 📜 License
 
-```
-supabase/migrations/<YYYYMMDDHHMMSS>_<snake_case_description>.sql
-```
-
-Example: `20261019000000_initial.sql`
-
-Timestamps are UTC and must be 14 digits. The Supabase CLI generates the
-timestamp automatically when you run `supabase db pull` or
-`supabase migration new`.
+MIT License. Free to use for personal, academic, and commercial projects.

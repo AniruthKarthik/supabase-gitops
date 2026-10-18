@@ -112,3 +112,16 @@ jobs:
               echo "**Backup failed.** Check step logs for details."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Send webhook notification
+        if: always()
+        env:
+          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+        run: |
+          if [ -n "$WEBHOOK_URL" ]; then
+            STATUS="${{ job.status }}"
+            curl -s -X POST -H "Content-Type: application/json" \
+              -d "{\"text\": \"Database backup: ${STATUS} on ${{ github.repository }} (Run ${{ github.run_id }})\"}" \
+              "$WEBHOOK_URL" || true
+          fi
+

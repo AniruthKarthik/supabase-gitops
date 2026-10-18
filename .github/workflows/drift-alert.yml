@@ -1,0 +1,55 @@
+name: Scheduled schema drift alert
+
+on:
+  schedule:
+    - cron: '0 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check-drift:
+    name: Check for uncaptured schema drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: master
+
+      - name: Set up Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: 2.121.0
+
+      - name: Inspect migration status
+        id: check
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          set -euo pipefail
+
+          pull_output=$(supabase db pull --db-url "$SUPABASE_DB_URL" 2>&1) || true
+          echo "$pull_output"
+
+          if echo "$pull_output" | grep -qi "No schema changes found"; then
+            echo "drift_detected=false" >> "$GITHUB_OUTPUT"
+            echo "No schema drift detected. Remote matches local migrations."
+          else
+            echo "drift_detected=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::Uncaptured schema drift detected between remote Supabase database and repository migrations!"
+          fi
+
+      - name: Notify on drift
+        if: steps.check.outputs.drift_detected == 'true'
+        run: |
+          set -euo pipefail
+          echo "## Schema Drift Detected" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Changes were detected in your remote Supabase database that are not yet committed as migration files." >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "To capture these changes into a version-controlled migration file, run the **Capture database migrations** workflow." >> "$GITHUB_STEP_SUMMARY"

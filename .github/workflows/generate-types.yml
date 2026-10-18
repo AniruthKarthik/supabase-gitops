@@ -1,0 +1,59 @@
+name: Generate TypeScript types
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: supabase-generate-types
+  cancel-in-progress: false
+
+jobs:
+  generate-types:
+    name: Generate TypeScript definitions from database schema
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: master
+
+      - name: Set up Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: 2.121.0
+
+      - name: Generate TypeScript types
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          set -euo pipefail
+          mkdir -p types
+          supabase gen types --lang=typescript --db-url "$SUPABASE_DB_URL" --schema public > types/database.types.ts
+          echo "Generated types/database.types.ts ($(wc -l < types/database.types.ts) lines)"
+
+      - name: Upload TypeScript types artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: database-types-${{ github.sha }}
+          path: types/database.types.ts
+          retention-days: 30
+
+      - name: Commit updated types if changed
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add types/database.types.ts
+          if git diff --cached --quiet; then
+            echo "TypeScript types are already up-to-date. Nothing to commit."
+            exit 0
+          fi
+          git commit -m "chore(types): update database.types.ts from remote schema"
+          git pull --rebase --autostash origin master
+          git push origin master
