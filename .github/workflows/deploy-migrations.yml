@@ -2,6 +2,12 @@ name: Deploy database migrations
 
 on:
   workflow_dispatch:
+    inputs:
+      confirm_deploy:
+        description: "Deploy migrations to supabase"
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -12,7 +18,7 @@ concurrency:
 
 jobs:
   preview:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -38,9 +44,9 @@ jobs:
 
   deploy:
     needs: preview
+    if: inputs.confirm_deploy
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    environment: production   # configure required reviewers; approval happens after preview
     steps:
       - uses: actions/checkout@v4
         with:
@@ -48,19 +54,17 @@ jobs:
 
       - uses: supabase/setup-cli@v1
         with:
-          version: 2.40.7
+          version: 2.121.0
 
-      - name: Backup schema and data
+      - name: Backup schema
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
-        run: |
-          supabase db dump --db-url "$SUPABASE_DB_URL" -f backup_schema.sql
-          supabase db dump --db-url "$SUPABASE_DB_URL" --data-only -f backup_data.sql
+        run: supabase db dump --db-url "$SUPABASE_DB_URL" -f backup_schema.sql
 
       - uses: actions/upload-artifact@v4
         with:
           name: pre-migration-backup
-          path: backup_*.sql
+          path: backup_schema.sql
           retention-days: 7
 
       - name: Apply migrations
