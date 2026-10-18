@@ -266,7 +266,8 @@ jobs:
           echo "Running supabase db pull to capture schema drift..."
           echo "(This starts a Docker shadow container -- may take 1-2 minutes)"
 
-          supabase db pull --db-url "$SUPABASE_DB_URL" 2>&1
+          pull_output=$(supabase db pull --db-url "$SUPABASE_DB_URL" 2>&1) || true
+          printf '%s\n' "$pull_output"
 
           after=$(ls supabase/migrations/*.sql 2>/dev/null | sort || true)
 
