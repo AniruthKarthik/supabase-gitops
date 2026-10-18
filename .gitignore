@@ -1,0 +1,32 @@
+venv/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Supabase local state
+supabase/.temp/
+supabase/.branches/
+supabase/.env
+
+# Local database and generated files
+*.dump
+*.sql.gz
+*.log
+
+# Private keys and certificates
+*.pem
+*.key
+
+# Go build artifacts (for your future backend)
+ /bin/
+*.exe
+*.test
+coverage.out
+
+# Editors and operating system
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
