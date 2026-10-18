@@ -1,0 +1,424 @@
+name: Capture database migrations
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: >
+          Type "capture" to confirm you have made schema changes in the Supabase
+          dashboard that are not yet represented by local migration files.
+        required: true
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: supabase-capture-migrations
+  cancel-in-progress: false
+
+jobs:
+  capture:
+    name: Capture schema drift to migration file
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: inputs.confirm == 'capture'
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: 2.121.0
+
+      - name: Verify Docker daemon
+        run: |
+          docker version --format 'Docker {{.Server.Version}}' \
+            || { echo "::error::Docker daemon is not available on this runner."; exit 1; }
+
+      - name: Preflight - analyse migration state
+        id: preflight
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          set -euo pipefail
+
+          echo "::group::Raw migration list output"
+          supabase migration list --db-url "$SUPABASE_DB_URL" 2>&1 | tee /tmp/migration_list.txt
+          echo "::endgroup::"
+
+          local_versions=$(
+            ls supabase/migrations/*.sql 2>/dev/null \
+              | xargs -r -I{} basename {} \
+              | grep -oP '^\d+' \
+              | sort \
+            || true
+          )
+
+          remote_versions=$(
+            awk '/[0-9]{14}/ {
+              gsub(/\xe2\x94\x82|\|/, " ")
+              n = split($0, cols, /  +/)
+              for (i = 1; i <= n; i++) {
+                gsub(/^[ \t]+|[ \t]+$/, "", cols[i])
+                if (cols[i] ~ /^[0-9]{14}$/) print cols[i]
+              }
+            }' /tmp/migration_list.txt \
+            | sort -u \
+            || true
+          )
+
+          missing_locally=$(comm -13 \
+            <(echo "$local_versions") \
+            <(echo "$remote_versions") \
+          || true)
+
+          not_on_remote=$(comm -23 \
+            <(echo "$local_versions") \
+            <(echo "$remote_versions") \
+          || true)
+
+          {
+            echo "local_versions<<ENDOFVAL"
+            echo "$local_versions"
+            echo "ENDOFVAL"
+            echo "remote_versions<<ENDOFVAL"
+            echo "$remote_versions"
+            echo "ENDOFVAL"
+            echo "missing_locally<<ENDOFVAL"
+            echo "$missing_locally"
+            echo "ENDOFVAL"
+            echo "not_on_remote<<ENDOFVAL"
+            echo "$not_on_remote"
+            echo "ENDOFVAL"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ -z "$missing_locally" ] && [ -z "$not_on_remote" ]; then
+            echo "case=D" >> "$GITHUB_OUTPUT"
+            echo "Case D: Local files and remote history are fully in sync."
+          elif [ -n "$missing_locally" ] && [ -n "$not_on_remote" ]; then
+            echo "case=C" >> "$GITHUB_OUTPUT"
+            echo "Case C: Both sides have extra entries -- ambiguous baseline."
+          elif [ -n "$missing_locally" ] && [ -z "$not_on_remote" ]; then
+            echo "case=A_or_B" >> "$GITHUB_OUTPUT"
+            echo "Case A or B: Remote history has entries without local files."
+          else
+            echo "case=UNPUSHED" >> "$GITHUB_OUTPUT"
+            echo "UNPUSHED: Local files exist that have not been pushed to the remote."
+          fi
+
+      - name: Handle non-capture outcomes
+        if: >
+          steps.preflight.outputs.case == 'C' ||
+          steps.preflight.outputs.case == 'D' ||
+          steps.preflight.outputs.case == 'UNPUSHED'
+        run: |
+          CASE="${{ steps.preflight.outputs.case }}"
+
+          if [ "$CASE" = "D" ]; then
+            echo "No schema drift detected. Local files match the remote history."
+            echo "Nothing to commit. Exiting successfully."
+            exit 0
+          fi
+
+          if [ "$CASE" = "UNPUSHED" ]; then
+            echo "::warning::Local migration files have NOT been applied to the remote database."
+            echo ""
+            echo "Versions in supabase/migrations/ absent from the remote history:"
+            printf '%s\n' "${{ steps.preflight.outputs.not_on_remote }}"
+            echo ""
+            echo "This workflow captures dashboard changes into files -- it does not deploy."
+            echo "To push pending migrations trigger 'Deploy database migrations' instead."
+            exit 1
+          fi
+
+          if [ "$CASE" = "C" ]; then
+            echo "::error::Case C -- Baseline ambiguous: remote history and local files diverge in both directions."
+            echo ""
+            echo "Remote versions missing from local files:"
+            printf '%s\n' "${{ steps.preflight.outputs.missing_locally }}"
+            echo ""
+            echo "Local versions missing from remote history:"
+            printf '%s\n' "${{ steps.preflight.outputs.not_on_remote }}"
+            echo ""
+            echo "Recommended steps:"
+            echo "  1. Review Database > Migrations in your Supabase dashboard."
+            echo "  2. Decide whether local files are ahead of, behind, or inconsistent with remote."
+            echo "  3. Use 'supabase migration repair --status applied|reverted <version> --db-url <url>'"
+            echo "     to align the remote history table with reality."
+            echo "  4. Re-trigger this workflow."
+            exit 1
+          fi
+
+      - name: Check remote history SQL content
+        id: check-history-sql
+        if: steps.preflight.outputs.case == 'A_or_B'
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          set -euo pipefail
+
+          missing_versions="${{ steps.preflight.outputs.missing_locally }}"
+
+          if ! command -v psql &>/dev/null; then
+            sudo apt-get install -y --no-install-recommends postgresql-client
+          fi
+
+          echo "Checking which missing remote versions have SQL in the history table..."
+          have_sql=""
+          no_sql=""
+
+          while IFS= read -r version; do
+            [ -z "$version" ] && continue
+
+            sql_len=$(psql "$SUPABASE_DB_URL" --no-psqlrc -At -c \
+              "SELECT COALESCE(
+                 (SELECT length(sql)
+                  FROM supabase_migrations.schema_migrations
+                  WHERE version = '${version}' AND sql IS NOT NULL),
+                 (SELECT length(string_agg(statement, '; '))
+                  FROM supabase_migrations.schema_migrations_stmts
+                  WHERE version = '${version}'),
+                 0
+               );" 2>/dev/null || echo "0")
+
+            if [ "${sql_len:-0}" -gt 10 ]; then
+              echo "  OK  $version -- SQL present in history table (${sql_len} bytes)"
+              have_sql="${have_sql:+$have_sql }$version"
+            else
+              echo "  MISSING  $version -- no SQL stored in history table"
+              no_sql="${no_sql:+$no_sql }$version"
+            fi
+          done <<< "$missing_versions"
+
+          {
+            echo "have_sql<<ENDOFVAL"
+            echo "$have_sql"
+            echo "ENDOFVAL"
+            echo "no_sql<<ENDOFVAL"
+            echo "$no_sql"
+            echo "ENDOFVAL"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ -n "$no_sql" ]; then
+            echo "case=B" >> "$GITHUB_OUTPUT"
+          else
+            echo "case=A" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fail for Case B - missing SQL cannot be reconstructed
+        if: >
+          steps.preflight.outputs.case == 'A_or_B' &&
+          steps.check-history-sql.outputs.case == 'B'
+        run: |
+          echo "::error::Case B -- Remote history contains version(s) whose original SQL"
+          echo "is not stored in the migration history table and cannot be reconstructed."
+          echo ""
+          echo "Versions without stored SQL:"
+          printf '%s\n' "${{ steps.check-history-sql.outputs.no_sql }}"
+          echo ""
+          echo "Versions that DO have stored SQL (if any):"
+          printf '%s\n' "${{ steps.check-history-sql.outputs.have_sql }}"
+          echo ""
+          echo "The remote database was modified by a mechanism that did not record"
+          echo "the original DDL (e.g. a manual psql command, a third-party tool, or"
+          echo "an older dashboard path that predates migration history storage)."
+          echo ""
+          echo "Safe reconciliation options:"
+          echo ""
+          echo "Option 1 -- Manual file + repair (recommended):"
+          echo "  a. Write the missing SQL by hand in:"
+          echo "     supabase/migrations/<version>_<name>.sql"
+          echo "  b. Register it: supabase migration repair --status applied <version> --db-url <url>"
+          echo "  c. Commit and push the file, then re-trigger this workflow."
+          echo ""
+          echo "Option 2 -- Placeholder + repair (history-only):"
+          echo "  a. supabase migration repair --status applied <version> --db-url <url>"
+          echo "  b. Create supabase/migrations/<version>_placeholder.sql with a comment"
+          echo "     describing what the remote change was."
+          echo "  c. Commit and push."
+          echo ""
+          echo "Option 3 -- Consolidated schema-diff capture (after resolving Case B versions):"
+          echo "  Once all Case B versions are resolved via Option 1 or 2, re-trigger"
+          echo "  this workflow. It will then generate a supabase db pull diff that"
+          echo "  captures any remaining unregistered schema drift."
+          exit 1
+
+      - name: Generate schema-drift migration via supabase db pull
+        id: generate
+        if: >
+          steps.preflight.outputs.case == 'A_or_B' &&
+          steps.check-history-sql.outputs.case == 'A'
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          set -euo pipefail
+
+          before=$(ls supabase/migrations/*.sql 2>/dev/null | sort || true)
+
+          echo "Running supabase db pull to capture schema drift..."
+          echo "(This starts a Docker shadow container -- may take 1-2 minutes)"
+
+          supabase db pull --db-url "$SUPABASE_DB_URL" 2>&1
+
+          after=$(ls supabase/migrations/*.sql 2>/dev/null | sort || true)
+
+          new_files=$(comm -13 <(echo "$before") <(echo "$after") || true)
+
+          if [ -z "$new_files" ]; then
+            echo "supabase db pull completed but produced no new file."
+            echo "The remote schema is already fully represented by local files."
+            {
+              echo "new_file="
+              echo "has_changes=false"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "New migration file(s) created:"
+          printf '%s\n' "$new_files"
+
+          new_file_count=$(printf '%s\n' "$new_files" | wc -l)
+          if [ "$new_file_count" -gt 1 ]; then
+            echo "::warning::supabase db pull created $new_file_count files -- unusual. All will be validated."
+          fi
+
+          {
+            echo "new_file<<ENDOFVAL"
+            echo "$new_files"
+            echo "ENDOFVAL"
+            echo "has_changes=true"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Validate generated migration file(s)
+        if: steps.generate.outputs.has_changes == 'true'
+        run: |
+          set -euo pipefail
+
+          failed=0
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+
+            echo "Validating: $f"
+
+            if [[ "$f" != supabase/migrations/* ]]; then
+              echo "::error::Generated file is outside supabase/migrations/: $f"
+              failed=1
+              continue
+            fi
+
+            if [ ! -s "$f" ]; then
+              echo "::error::Generated migration file is empty: $f"
+              failed=1
+              continue
+            fi
+
+            ddl_lines=$(grep -cvE '^\s*(--|/\*|$)' "$f" || true)
+            if [ "$ddl_lines" -eq 0 ]; then
+              echo "::error::Generated file contains only comments or whitespace: $f"
+              failed=1
+              continue
+            fi
+
+            for unsafe in 'INSERT INTO' 'UPDATE ' 'DELETE FROM' 'TRUNCATE '; do
+              if grep -qiE "^[[:space:]]*${unsafe}" "$f"; then
+                echo "::error::Generated file contains data-manipulation SQL ('${unsafe}') -- rejected: $f"
+                failed=1
+              fi
+            done
+
+            for risky in 'DROP TABLE' 'DROP SCHEMA' 'DROP DATABASE'; do
+              if grep -qi "$risky" "$f"; then
+                echo "::warning::Generated file contains '$risky' in $f -- review before deploying."
+              fi
+            done
+
+            echo "  OK $f ($(wc -l < "$f") lines, $ddl_lines non-comment lines)"
+            echo "--- begin generated SQL ---"
+            cat "$f"
+            echo "--- end generated SQL ---"
+
+          done <<< "${{ steps.generate.outputs.new_file }}"
+
+          [ "$failed" -eq 0 ] || exit 1
+
+      - name: Commit migration file(s) to master
+        if: steps.generate.outputs.has_changes == 'true'
+        run: |
+          set -euo pipefail
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add supabase/migrations/
+
+          if git diff --cached --quiet; then
+            echo "Nothing staged for commit (files already tracked). Exiting."
+            exit 0
+          fi
+
+          new_files="${{ steps.generate.outputs.new_file }}"
+          file_list=$(printf '%s\n' "$new_files" | xargs -I{} basename {} | tr '\n' ' ')
+
+          git commit -m "chore(db): capture schema drift from Supabase dashboard
+
+          Generated by the 'Capture database migrations' workflow.
+          Triggered by: ${{ github.actor }}
+          Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          Files added: ${file_list}
+
+          NOTE: This file is a consolidated schema diff. It does NOT reconstruct
+          the original sequence of individual dashboard changes. Review carefully
+          before triggering 'Deploy database migrations'."
+
+          git pull --rebase --autostash origin master
+
+          git push origin master
+
+      - name: Write job summary
+        if: always()
+        run: |
+          CASE="${{ steps.preflight.outputs.case }}"
+          {
+            echo "## Capture database migrations"
+            echo ""
+            case "$CASE" in
+              D)
+                echo "**No drift detected.** Local files and remote history are in sync."
+                ;;
+              UNPUSHED)
+                echo "**Local migrations not yet pushed to remote.**"
+                echo ""
+                echo "Run the **Deploy database migrations** workflow to push pending files."
+                ;;
+              C)
+                echo "**Ambiguous baseline (Case C).** Both local files and remote history"
+                echo "have entries the other side does not know about. Manual reconciliation required."
+                ;;
+              A_or_B)
+                HIST_CASE="${{ steps.check-history-sql.outputs.case }}"
+                if [ "$HIST_CASE" = "B" ]; then
+                  echo "**Case B -- history SQL missing.** Cannot reconstruct original migrations."
+                  echo "See the workflow log for reconciliation options."
+                elif [ "${{ steps.generate.outputs.has_changes }}" = "true" ]; then
+                  echo "**Schema drift captured successfully.**"
+                  echo ""
+                  echo "### New migration file(s)"
+                  echo '```'
+                  echo "${{ steps.generate.outputs.new_file }}"
+                  echo '```'
+                  echo ""
+                  echo "> **Review before deploying.** The generated file is a consolidated schema diff."
+                  echo "> Trigger **Deploy database migrations** when you are ready to apply it."
+                else
+                  echo "**No new migration produced.** The remote schema matches the local baseline."
+                fi
+                ;;
+            esac
+          } >> "$GITHUB_STEP_SUMMARY"
