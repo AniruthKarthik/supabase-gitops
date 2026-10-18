@@ -33,14 +33,9 @@ jobs:
       - name: Verify tools
         run: |
           set -euo pipefail
-          if ! command -v pg_dump &>/dev/null; then
-            sudo apt-get update -qq
-            sudo apt-get install -y --no-install-recommends postgresql-client
-          fi
-          if ! command -v gpg &>/dev/null; then
-            sudo apt-get update -qq
-            sudo apt-get install -y --no-install-recommends gnupg
-          fi
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends postgresql-client-17 gnupg
+          pg_dump --version
 
       - name: Dump and encrypt database
         id: backup
