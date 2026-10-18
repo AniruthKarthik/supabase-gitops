@@ -33,9 +33,8 @@ jobs:
       - name: Verify tools
         run: |
           set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends postgresql-client-17 gnupg
-          pg_dump --version
+          docker pull postgres:17-alpine
+          docker run --rm postgres:17-alpine pg_dump --version
 
       - name: Dump and encrypt database
         id: backup
@@ -61,12 +60,14 @@ jobs:
           FILE_NAME="supabase_backup_${TIMESTAMP}.sql.gpg"
           OUTPUT_PATH="/tmp/${FILE_NAME}"
 
-          echo "Running pg_dump and encrypting with AES-256..."
-          pg_dump "$SUPABASE_DB_URL" \
-            --schema=public \
-            --clean \
-            --if-exists \
-            --quote-all-identifiers \
+          echo "Running pg_dump via postgres:17 Docker container and encrypting with AES-256..."
+          docker run --rm \
+            postgres:17-alpine \
+            pg_dump "$SUPABASE_DB_URL" \
+              --schema=public \
+              --clean \
+              --if-exists \
+              --quote-all-identifiers \
             | gpg --batch --yes --symmetric --cipher-algo AES256 --passphrase "$PASSPHRASE" -o "$OUTPUT_PATH"
 
           FILE_SIZE=$(ls -lh "$OUTPUT_PATH" | awk '{print $5}')
