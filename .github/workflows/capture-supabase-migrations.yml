@@ -61,18 +61,26 @@ jobs:
             || true
           )
 
-          remote_versions=$(
-            awk '/[0-9]{14}/ {
-              gsub(/\xe2\x94\x82|\|/, " ")
-              n = split($0, cols, /  +/)
-              for (i = 1; i <= n; i++) {
-                gsub(/^[ \t]+|[ \t]+$/, "", cols[i])
-                if (cols[i] ~ /^[0-9]{14}$/) print cols[i]
-              }
-            }' /tmp/migration_list.txt \
-            | sort -u \
-            || true
-          )
+          remote_versions=""
+          if command -v psql &>/dev/null; then
+            remote_versions=$(psql "$SUPABASE_DB_URL" --no-psqlrc -At -c \
+              "SELECT version FROM supabase_migrations.schema_migrations ORDER BY version;" 2>/dev/null || true)
+          fi
+
+          if [ -z "$remote_versions" ]; then
+            remote_versions=$(
+              tr -d '`' < /tmp/migration_list.txt \
+                | awk -F'|' '
+                  NF >= 2 {
+                    remote = $2
+                    gsub(/^[ \t]+|[ \t]+$/, "", remote)
+                    if (remote ~ /^[0-9]{14}$/) print remote
+                  }
+                ' \
+                | sort -u \
+                || true
+            )
+          fi
 
           missing_locally=$(comm -13 \
             <(echo "$local_versions") \
@@ -116,16 +124,9 @@ jobs:
       - name: Handle non-capture outcomes
         if: >
           steps.preflight.outputs.case == 'C' ||
-          steps.preflight.outputs.case == 'D' ||
           steps.preflight.outputs.case == 'UNPUSHED'
         run: |
           CASE="${{ steps.preflight.outputs.case }}"
-
-          if [ "$CASE" = "D" ]; then
-            echo "No schema drift detected. Local files match the remote history."
-            echo "Nothing to commit. Exiting successfully."
-            exit 0
-          fi
 
           if [ "$CASE" = "UNPUSHED" ]; then
             echo "::warning::Local migration files have NOT been applied to the remote database."
@@ -253,8 +254,8 @@ jobs:
       - name: Generate schema-drift migration via supabase db pull
         id: generate
         if: >
-          steps.preflight.outputs.case == 'A_or_B' &&
-          steps.check-history-sql.outputs.case == 'A'
+          steps.preflight.outputs.case == 'D' ||
+          (steps.preflight.outputs.case == 'A_or_B' && steps.check-history-sql.outputs.case == 'A')
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
@@ -390,7 +391,19 @@ jobs:
             echo ""
             case "$CASE" in
               D)
-                echo "**No drift detected.** Local files and remote history are in sync."
+                if [ "${{ steps.generate.outputs.has_changes }}" = "true" ]; then
+                  echo "**Schema drift captured successfully from Supabase dashboard.**"
+                  echo ""
+                  echo "### New migration file(s)"
+                  echo '```'
+                  echo "${{ steps.generate.outputs.new_file }}"
+                  echo '```'
+                  echo ""
+                  echo "> **Review before deploying.** The generated file is a consolidated schema diff."
+                  echo "> Trigger **Deploy database migrations** when you are ready to apply it."
+                else
+                  echo "**No schema drift detected.** The remote database schema matches the local migrations."
+                fi
                 ;;
               UNPUSHED)
                 echo "**Local migrations not yet pushed to remote.**"
