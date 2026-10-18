@@ -10,6 +10,7 @@ Supabase PostgreSQL schema and migration history for Supabase PostgreSQL.
 .github/workflows/
   deploy-migrations.yml          # Manually deploy local migrations → remote DB
   capture-supabase-migrations.yml # Manually capture dashboard changes → local files
+  backup-database.yml            # Weekly automated + manual encrypted full DB backup
 supabase/
   config.toml                    # Supabase CLI project configuration
   migrations/
@@ -184,7 +185,52 @@ supabase migration repair --status reverted <version> --db-url "$SUPABASE_DB_URL
 - It is **idempotent**: repeated runs with no additional dashboard changes will
   not create empty migrations or duplicate commits.
 - Concurrent executions are serialised by a dedicated concurrency group
-  (`supabase-capture-migrations`), separate from the deploy workflow's group.
+---
+
+### 3. Encrypted database backups (`backup-database.yml`)
+
+Creates a complete, self-contained snapshot of the remote PostgreSQL database
+(**schema + all row data**), encrypts it with AES-256 using your secret key,
+and stores it as a downloadable GitHub Actions artifact (retained for 90 days).
+
+| Trigger | Schedule (Weekly every Sunday at 02:00 UTC) **or** Manual (`workflow_dispatch`) |
+|---|---|
+| Secret | `SUPABASE_DB_URL`, `BACKUP_ENCRYPTION_KEY` |
+| Encryption | AES-256 symmetric cipher via `gpg` |
+| Output | `supabase_backup_<YYYYMMDD_HHMMSS>.sql.gpg` |
+| Retention | 90 days (GitHub Actions Artifact) |
+
+#### Setting up the encryption secret
+
+1. Go to: **Repository > Settings > Secrets and variables > Actions > New repository secret**
+2. Name: `BACKUP_ENCRYPTION_KEY`
+3. Value: *A strong password of your choice*
+
+> When triggered manually, you can optionally supply an override password in the workflow inputs. For automated weekly runs, the `BACKUP_ENCRYPTION_KEY` secret is used.
+
+#### How to download and restore the backup
+
+1. In GitHub, go to **Actions > Backup database > (latest run) > Artifacts**.
+2. Download the artifact (e.g. `encrypted-database-backup-20261019_020000.zip`).
+3. Unzip the file to find `supabase_backup_<timestamp>.sql.gpg`.
+
+**Step 1 — Decrypt the SQL using your password:**
+```bash
+gpg --decrypt supabase_backup_<timestamp>.sql.gpg > rebuild.sql
+```
+
+**Step 2 — Restore the database:**
+
+- **Option A (Supabase Dashboard / SQL Editor)**: Open `rebuild.sql`, copy all text, paste it into the SQL Editor of any Supabase project, and click **Run**.
+- **Option B (Terminal to any PostgreSQL database)**:
+  ```bash
+  psql "<YOUR_TARGET_DATABASE_URL>" < rebuild.sql
+  ```
+- **Option C (Local Docker PostgreSQL)**:
+  ```bash
+  docker run --name test-db -e POSTGRES_PASSWORD=postgres -p 5432:5432 -d postgres:17
+  psql "postgresql://postgres:postgres@localhost:5432/postgres" < rebuild.sql
+  ```
 
 ---
 

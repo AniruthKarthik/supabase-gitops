@@ -1,0 +1,118 @@
+name: Backup database
+
+on:
+  schedule:
+    - cron: '0 2 * * 0'
+  workflow_dispatch:
+    inputs:
+      encryption_key_override:
+        description: >
+          Optional: Enter an encryption password to override the
+          BACKUP_ENCRYPTION_KEY repository secret for this run.
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supabase-database-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    name: Create encrypted database backup
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Verify tools
+        run: |
+          set -euo pipefail
+          if ! command -v pg_dump &>/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends postgresql-client
+          fi
+          if ! command -v gpg &>/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends gnupg
+          fi
+
+      - name: Dump and encrypt database
+        id: backup
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          BACKUP_ENCRYPTION_KEY: ${{ secrets.BACKUP_ENCRYPTION_KEY }}
+          OVERRIDE_KEY: ${{ inputs.encryption_key_override }}
+        run: |
+          set -euo pipefail
+
+          PASSPHRASE="${OVERRIDE_KEY:-$BACKUP_ENCRYPTION_KEY}"
+          if [ -z "$PASSPHRASE" ]; then
+            echo "::error::No encryption key found. Either configure the 'BACKUP_ENCRYPTION_KEY' secret or provide an encryption password in workflow inputs."
+            exit 1
+          fi
+
+          if [ -z "$SUPABASE_DB_URL" ]; then
+            echo "::error::SUPABASE_DB_URL secret is not set."
+            exit 1
+          fi
+
+          TIMESTAMP=$(date -u +'%Y%m%d_%H%M%S')
+          FILE_NAME="supabase_backup_${TIMESTAMP}.sql.gpg"
+          OUTPUT_PATH="/tmp/${FILE_NAME}"
+
+          echo "Running pg_dump and encrypting with AES-256..."
+          pg_dump "$SUPABASE_DB_URL" \
+            --schema=public \
+            --clean \
+            --if-exists \
+            --quote-all-identifiers \
+            | gpg --batch --yes --symmetric --cipher-algo AES256 --passphrase "$PASSPHRASE" -o "$OUTPUT_PATH"
+
+          FILE_SIZE=$(ls -lh "$OUTPUT_PATH" | awk '{print $5}')
+          echo "Backup created: $OUTPUT_PATH ($FILE_SIZE)"
+
+          echo "file_name=${FILE_NAME}" >> "$GITHUB_OUTPUT"
+          echo "file_path=${OUTPUT_PATH}" >> "$GITHUB_OUTPUT"
+          echo "file_size=${FILE_SIZE}" >> "$GITHUB_OUTPUT"
+          echo "timestamp=${TIMESTAMP}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload encrypted backup artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: encrypted-database-backup-${{ steps.backup.outputs.timestamp }}
+          path: ${{ steps.backup.outputs.file_path }}
+          retention-days: 90
+
+      - name: Write job summary
+        if: always()
+        run: |
+          {
+            echo "## Database Backup"
+            echo ""
+            if [ "${{ steps.backup.conclusion }}" = "success" ]; then
+              echo "Encrypted database backup created successfully."
+              echo ""
+              echo "| Field | Value |"
+              echo "|---|---|"
+              echo "| Trigger | ${{ github.event_name }} |"
+              echo "| Timestamp | ${{ steps.backup.outputs.timestamp }} UTC |"
+              echo "| Artifact | \`encrypted-database-backup-${{ steps.backup.outputs.timestamp }}\` |"
+              echo "| File | \`${{ steps.backup.outputs.file_name }}\` |"
+              echo "| Size | ${{ steps.backup.outputs.file_size }} |"
+              echo "| Retention | 90 days |"
+              echo ""
+              echo "### How to restore"
+              echo '```bash'
+              echo "gpg --decrypt ${{ steps.backup.outputs.file_name }} > rebuild.sql"
+              echo "psql \"<TARGET_DATABASE_URL>\" < rebuild.sql"
+              echo '```'
+            else
+              echo "**Backup failed.** Check step logs for details."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
