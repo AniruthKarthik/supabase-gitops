@@ -113,10 +113,12 @@ jobs:
         run: |
           set -euo pipefail
           docker run --name pg-restore-target -e POSTGRES_PASSWORD=postgres -p 5433:5432 -d postgres:17-alpine
-          until docker exec pg-restore-target pg_isready -U postgres >/dev/null 2>&1; do
+          until docker exec pg-restore-target pg_isready -U postgres >/dev/null 2>&1 && docker exec pg-restore-target psql -U postgres -d postgres -c "SELECT 1" >/dev/null 2>&1; do
             sleep 1
           done
-          docker exec -i pg-restore-target psql -U postgres -d postgres << 'EOF'
+          sleep 2
+          for i in {1..10}; do
+            if docker exec -i pg-restore-target psql -U postgres -d postgres << 'EOF'
           DO $$
           DECLARE
             r text;
@@ -144,6 +146,11 @@ jobs:
           CREATE SCHEMA IF NOT EXISTS storage;
           CREATE SCHEMA IF NOT EXISTS graphql;
           EOF
+            then
+              break
+            fi
+            sleep 1
+          done
           echo "Isolated PostgreSQL 17 restore target initialized with standard Supabase roles and schemas."
 
       - name: Restore database from decrypted backup
