@@ -115,7 +115,35 @@ jobs:
           until docker exec pg-restore-target pg_isready -U postgres >/dev/null 2>&1; do
             sleep 1
           done
-          echo "Isolated PostgreSQL 17 restore target is healthy."
+          docker exec -i pg-restore-target psql -U postgres -d postgres << 'EOF'
+          DO $$
+          DECLARE
+            r text;
+          BEGIN
+            FOR r IN SELECT unnest(ARRAY[
+              'anon',
+              'authenticated',
+              'service_role',
+              'authenticator',
+              'supabase_admin',
+              'dashboard_user',
+              'supabase_auth_admin',
+              'supabase_storage_admin',
+              'supabase_functions_admin'
+            ]) LOOP
+              BEGIN
+                EXECUTE format('CREATE ROLE %I NOLOGIN', r);
+              EXCEPTION WHEN duplicate_object THEN
+                NULL;
+              END;
+            END LOOP;
+          END $$;
+          CREATE SCHEMA IF NOT EXISTS auth;
+          CREATE SCHEMA IF NOT EXISTS extensions;
+          CREATE SCHEMA IF NOT EXISTS storage;
+          CREATE SCHEMA IF NOT EXISTS graphql;
+          EOF
+          echo "Isolated PostgreSQL 17 restore target initialized with standard Supabase roles and schemas."
 
       - name: Restore database from decrypted backup
         id: restore
