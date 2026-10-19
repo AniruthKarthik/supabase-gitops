@@ -1,0 +1,155 @@
+name: RLS and database security audit
+
+on:
+  pull_request:
+    paths:
+      - 'supabase/migrations/**'
+      - '.github/workflows/rls-security-audit.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supabase-rls-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit-rls:
+    name: Audit Row Level Security and access policies
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Start isolated PostgreSQL test instance
+        run: |
+          set -euo pipefail
+          docker run --name pg-rls-audit -e POSTGRES_PASSWORD=postgres -p 5434:5432 -d postgres:17-alpine
+          until docker exec pg-rls-audit pg_isready -U postgres >/dev/null 2>&1; do
+            sleep 1
+          done
+          docker exec -i pg-rls-audit psql -U postgres -d postgres << 'EOF'
+          DO $$
+          DECLARE
+            r text;
+          BEGIN
+            FOR r IN SELECT unnest(ARRAY[
+              'anon',
+              'authenticated',
+              'service_role',
+              'authenticator',
+              'supabase_admin',
+              'dashboard_user',
+              'supabase_auth_admin',
+              'supabase_storage_admin',
+              'supabase_functions_admin'
+            ]) LOOP
+              BEGIN
+                EXECUTE format('CREATE ROLE %I NOLOGIN', r);
+              EXCEPTION WHEN duplicate_object THEN
+                NULL;
+              END;
+            END LOOP;
+          END $$;
+          CREATE SCHEMA IF NOT EXISTS auth;
+          CREATE SCHEMA IF NOT EXISTS extensions;
+          CREATE SCHEMA IF NOT EXISTS storage;
+          CREATE SCHEMA IF NOT EXISTS graphql;
+          EOF
+          echo "Isolated PostgreSQL audit container ready."
+
+      - name: Apply migrations sequentially
+        run: |
+          set -euo pipefail
+          for f in $(ls supabase/migrations/*.sql 2>/dev/null | sort); do
+            [ -e "$f" ] || continue
+            echo "Applying: $f"
+            docker exec -i pg-rls-audit psql -U postgres -d postgres -v ON_ERROR_STOP=1 < "$f"
+          done
+          echo "All migrations applied."
+
+      - name: Audit Row Level Security compliance
+        id: rls-check
+        run: |
+          set -euo pipefail
+
+          UNPROTECTED_TABLES=$(docker exec pg-rls-audit psql -U postgres -d postgres -At -c \
+            "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND rowsecurity = false ORDER BY tablename;")
+
+          POLICIES_REPORT=$(docker exec pg-rls-audit psql -U postgres -d postgres -At -c \
+            "SELECT t.tablename || ' | ' || CASE WHEN t.rowsecurity THEN 'ENABLED' ELSE 'DISABLED' END || ' | ' || count(p.policyname)
+             FROM pg_tables t
+             LEFT JOIN pg_policies p ON t.schemaname = p.schemaname AND t.tablename = p.tablename
+             WHERE t.schemaname = 'public'
+             GROUP BY t.tablename, t.rowsecurity
+             ORDER BY t.tablename;")
+
+          PERMISSIVE_WRITES=$(docker exec pg-rls-audit psql -U postgres -d postgres -At -c \
+            "SELECT tablename || ': ' || policyname || ' (' || cmd || ')'
+             FROM pg_policies
+             WHERE schemaname = 'public'
+               AND cmd IN ('INSERT', 'UPDATE', 'DELETE', 'ALL')
+               AND (qual = 'true' OR with_check = 'true')
+             ORDER BY tablename, policyname;")
+
+          echo "Audit table status:"
+          printf '%s\n' "$POLICIES_REPORT"
+
+          if [ -n "$PERMISSIVE_WRITES" ]; then
+            echo "::warning::Unrestricted permissive write policies found:"
+            printf '%s\n' "$PERMISSIVE_WRITES"
+          fi
+
+          if [ -n "$UNPROTECTED_TABLES" ]; then
+            echo "::error::Security gate failed! The following public tables lack Row Level Security (RLS):"
+            printf '%s\n' "$UNPROTECTED_TABLES"
+            exit 1
+          fi
+
+          echo "RLS enforcement check passed. All public tables have RLS enabled."
+
+          {
+            echo "policies_report<<ENDOFVAL"
+            echo "$POLICIES_REPORT"
+            echo "ENDOFVAL"
+            echo "permissive_writes<<ENDOFVAL"
+            echo "$PERMISSIVE_WRITES"
+            echo "ENDOFVAL"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Stop and remove test container
+        if: always()
+        run: |
+          docker stop pg-rls-audit >/dev/null 2>&1 || true
+          docker rm pg-rls-audit >/dev/null 2>&1 || true
+
+      - name: Write audit report to Job Summary
+        if: always()
+        run: |
+          {
+            echo "## Row Level Security (RLS) & Security Audit"
+            echo ""
+            if [ "${{ steps.rls-check.conclusion }}" = "success" ]; then
+              echo "All public database tables comply with Row Level Security policies."
+              echo ""
+              echo "| Table Name | RLS Status | Policy Count |"
+              echo "|---|---|---|"
+              while IFS='|' read -r table status count; do
+                [ -z "$table" ] && continue
+                echo "| \`$table\` | $status | $count |"
+              done <<< "${{ steps.rls-check.outputs.policies_report }}"
+              echo ""
+              if [ -n "${{ steps.rls-check.outputs.permissive_writes }}" ]; then
+                echo "### Permissive Write Policies Audit"
+                echo "> Warning: The following policies allow unrestricted writes:"
+                echo '```'
+                echo "${{ steps.rls-check.outputs.permissive_writes }}"
+                echo '```'
+              fi
+            else
+              echo "**RLS security audit failed.** One or more public tables lack Row Level Security."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
