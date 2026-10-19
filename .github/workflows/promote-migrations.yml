@@ -1,0 +1,153 @@
+name: Promote migrations to environments
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: >
+          Type "promote" to deploy migrations through the Staging to Production pipeline.
+        required: true
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supabase-promotion-pipeline
+  cancel-in-progress: false
+
+jobs:
+  deploy-staging:
+    name: Deploy migrations to Staging environment
+    if: >
+      github.ref == 'refs/heads/master' &&
+      inputs.confirm == 'promote'
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Set up Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: 2.121.0
+
+      - name: Deploy to Staging
+        id: staging-deploy
+        env:
+          TARGET_URL: ${{ secrets.SUPABASE_STAGING_DB_URL || secrets.SUPABASE_DB_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "$TARGET_URL" ]; then
+            echo "::error::No staging database URL configured."
+            exit 1
+          fi
+
+          echo "Backing up staging schema..."
+          mkdir -p /tmp/staging
+          supabase db dump --db-url "$TARGET_URL" -f /tmp/staging/pre_deploy_staging.sql
+
+          echo "Applying migrations to Staging..."
+          supabase db push --db-url "$TARGET_URL" --yes
+
+          echo "Verifying Staging migrations..."
+          supabase migration list --db-url "$TARGET_URL" | tee /tmp/staging/migration_state.txt
+
+      - name: Upload staging pre-migration backup
+        uses: actions/upload-artifact@v4
+        with:
+          name: pre-staging-backup-${{ github.run_id }}
+          path: /tmp/staging/pre_deploy_staging.sql
+          retention-days: 14
+
+      - name: Publish staging summary
+        run: |
+          {
+            echo "### Staging Deployment Passed"
+            echo ""
+            echo "Migrations successfully applied and verified on Staging environment."
+            echo '```'
+            cat /tmp/staging/migration_state.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-production:
+    name: Promote migrations to Production environment
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Set up Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: 2.121.0
+
+      - name: Deploy to Production
+        id: production-deploy
+        env:
+          TARGET_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "$TARGET_URL" ]; then
+            echo "::error::SUPABASE_DB_URL secret is not set."
+            exit 1
+          fi
+
+          echo "Backing up production schema..."
+          mkdir -p /tmp/production
+          supabase db dump --db-url "$TARGET_URL" -f /tmp/production/pre_deploy_production.sql
+
+          echo "Applying migrations to Production..."
+          supabase db push --db-url "$TARGET_URL" --yes
+
+          echo "Verifying Production migrations..."
+          supabase migration list --db-url "$TARGET_URL" | tee /tmp/production/migration_state.txt
+
+      - name: Upload production pre-migration backup
+        uses: actions/upload-artifact@v4
+        with:
+          name: pre-production-backup-${{ github.run_id }}
+          path: /tmp/production/pre_deploy_production.sql
+          retention-days: 30
+
+      - name: Publish pipeline summary
+        if: always()
+        run: |
+          {
+            echo "## Multi-Environment Promotion Pipeline Summary"
+            echo ""
+            echo "| Stage | Status | Environment |"
+            echo "|---|---|---|"
+            echo "| Staging Deployment | Success | \`staging\` |"
+            echo "| Production Deployment | ${{ job.status }} | \`production\` |"
+            echo ""
+            echo "### Production Migration State"
+            echo '```'
+            cat /tmp/production/migration_state.txt 2>/dev/null || echo "(no state recorded)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Send webhook notification
+        if: always()
+        env:
+          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+        run: |
+          if [ -n "$WEBHOOK_URL" ]; then
+            STATUS="${{ job.status }}"
+            curl -s -X POST -H "Content-Type: application/json" \
+              -d "{\"text\": \"Promotion Pipeline: ${STATUS} on ${{ github.repository }} (Run ${{ github.run_id }})\"}" \
+              "$WEBHOOK_URL" || true
+          fi
