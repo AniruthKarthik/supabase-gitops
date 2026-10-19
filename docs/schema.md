@@ -1,6 +1,6 @@
 # Database Schema Documentation
 
-> Auto-generated from database schema on `2026-10-19 13:14:09 UTC`.
+> Auto-generated from database schema on `2026-10-19 13:14:39 UTC`.
 
 ## Entity Relationship Diagram
 
