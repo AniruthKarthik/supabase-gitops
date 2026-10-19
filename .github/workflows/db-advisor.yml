@@ -33,10 +33,12 @@ jobs:
         run: |
           set -euo pipefail
           docker run --name pg-advisor-target -e POSTGRES_PASSWORD=postgres -p 5435:5432 -d postgres:17-alpine
-          until docker exec pg-advisor-target pg_isready -U postgres >/dev/null 2>&1; do
+          until docker exec pg-advisor-target pg_isready -U postgres >/dev/null 2>&1 && docker exec pg-advisor-target psql -U postgres -d postgres -c "SELECT 1" >/dev/null 2>&1; do
             sleep 1
           done
-          docker exec -i pg-advisor-target psql -U postgres -d postgres << 'EOF'
+          sleep 2
+          for i in {1..10}; do
+            if docker exec -i pg-advisor-target psql -U postgres -d postgres << 'EOF'
           DO $$
           DECLARE
             r text;
@@ -61,6 +63,11 @@ jobs:
           CREATE SCHEMA IF NOT EXISTS storage;
           CREATE SCHEMA IF NOT EXISTS graphql;
           EOF
+            then
+              break
+            fi
+            sleep 1
+          done
           echo "Isolated PostgreSQL test container ready."
 
       - name: Apply migrations sequentially
