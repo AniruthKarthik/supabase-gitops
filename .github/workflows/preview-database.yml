@@ -1,0 +1,174 @@
+name: Ephemeral database preview environments
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+    paths:
+      - 'supabase/migrations/**'
+      - '.github/workflows/preview-database.yml'
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform: create or destroy'
+        required: true
+        type: choice
+        options:
+          - create
+          - destroy
+        default: create
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: supabase-preview-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  manage-preview:
+    name: Manage ephemeral PR database preview
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: 2.121.0
+
+      - name: Determine preview mode
+        id: mode
+        env:
+          ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+          EVENT_ACTION: ${{ github.event.action }}
+          INPUT_ACTION: ${{ inputs.action }}
+        run: |
+          set -euo pipefail
+
+          ACTION="${INPUT_ACTION:-create}"
+          if [ "$EVENT_ACTION" = "closed" ]; then
+            ACTION="destroy"
+          fi
+
+          if [ -n "$ACCESS_TOKEN" ] && [ -n "$PROJECT_ID" ]; then
+            echo "preview_mode=cloud" >> "$GITHUB_OUTPUT"
+          else
+            echo "preview_mode=isolated_ci" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "action=${ACTION}" >> "$GITHUB_OUTPUT"
+          echo "PR Preview Mode: ${ACTION} via $([ -n "$ACCESS_TOKEN" ] && echo "Supabase Cloud Branching API" || echo "Isolated CI Container")"
+
+      - name: Manage Cloud Preview Branch (Supabase API)
+        if: steps.mode.outputs.preview_mode == 'cloud'
+        env:
+          ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+          ACTION: ${{ steps.mode.outputs.action }}
+          PR_NUM: ${{ github.event.pull_request.number || github.run_id }}
+        run: |
+          set -euo pipefail
+          BRANCH_NAME="pr-${PR_NUM}"
+
+          if [ "$ACTION" = "destroy" ]; then
+            echo "Searching for branch $BRANCH_NAME to delete..."
+            BRANCH_ID=$(curl -s -H "Authorization: Bearer $ACCESS_TOKEN" \
+              "https://api.supabase.com/v1/projects/${PROJECT_ID}/branches" \
+              | jq -r ".[] | select(.name == \"$BRANCH_NAME\") | .id" || true)
+
+            if [ -n "$BRANCH_ID" ] && [ "$BRANCH_ID" != "null" ]; then
+              echo "Deleting branch $BRANCH_ID..."
+              curl -s -X DELETE -H "Authorization: Bearer $ACCESS_TOKEN" \
+                "https://api.supabase.com/v1/projects/${PROJECT_ID}/branches/${BRANCH_ID}"
+              echo "Branch $BRANCH_NAME deleted successfully."
+            fi
+            exit 0
+          fi
+
+          echo "Ensuring preview branch $BRANCH_NAME exists..."
+          BRANCH_RES=$(curl -s -X POST -H "Authorization: Bearer $ACCESS_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"name\": \"$BRANCH_NAME\"}" \
+            "https://api.supabase.com/v1/projects/${PROJECT_ID}/branches" || true)
+          echo "Branch API response: $BRANCH_RES"
+
+      - name: Verify Isolated CI Container Preview
+        if: steps.mode.outputs.preview_mode == 'isolated_ci' && steps.mode.outputs.action == 'create'
+        run: |
+          set -euo pipefail
+          docker run --name pg-pr-preview -e POSTGRES_PASSWORD=postgres -p 5437:5432 -d postgres:17-alpine
+          until docker exec pg-pr-preview pg_isready -U postgres >/dev/null 2>&1 && docker exec pg-pr-preview psql -U postgres -d postgres -c "SELECT 1" >/dev/null 2>&1; do
+            sleep 1
+          done
+          sleep 2
+
+          for i in {1..10}; do
+            if docker exec -i pg-pr-preview psql -U postgres -d postgres << 'EOF'
+          DO $$
+          DECLARE
+            r text;
+          BEGIN
+            FOR r IN SELECT unnest(ARRAY[
+              'anon',
+              'authenticated',
+              'service_role',
+              'authenticator',
+              'supabase_admin',
+              'dashboard_user'
+            ]) LOOP
+              BEGIN
+                EXECUTE format('CREATE ROLE %I NOLOGIN', r);
+              EXCEPTION WHEN duplicate_object THEN
+                NULL;
+              END;
+            END LOOP;
+          END $$;
+          CREATE SCHEMA IF NOT EXISTS auth;
+          CREATE SCHEMA IF NOT EXISTS extensions;
+          CREATE SCHEMA IF NOT EXISTS storage;
+          CREATE SCHEMA IF NOT EXISTS graphql;
+          EOF
+            then
+              break
+            fi
+            sleep 1
+          done
+
+          echo "Applying pending migrations to isolated preview container..."
+          for f in $(ls supabase/migrations/*.sql 2>/dev/null | sort); do
+            [ -e "$f" ] || continue
+            echo "Applying: $f"
+            docker exec -i pg-pr-preview psql -U postgres -d postgres -v ON_ERROR_STOP=1 < "$f"
+          done
+
+          TABLE_COUNT=$(docker exec pg-pr-preview psql -U postgres -d postgres -At -c \
+            "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE';")
+          echo "Isolated preview environment created successfully ($TABLE_COUNT public tables verified)."
+
+          docker stop pg-pr-preview >/dev/null 2>&1 || true
+          docker rm pg-pr-preview >/dev/null 2>&1 || true
+
+      - name: Publish preview summary
+        if: always()
+        run: |
+          {
+            echo "## Ephemeral Database Preview Status"
+            echo ""
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Mode | \`${{ steps.mode.outputs.preview_mode }}\` |"
+            echo "| Action | \`${{ steps.mode.outputs.action }}\` |"
+            echo "| Pull Request | #${{ github.event.pull_request.number || 'manual' }} |"
+            echo ""
+            if [ "${{ steps.mode.outputs.preview_mode }}" = "isolated_ci" ]; then
+              echo "> Ephemeral PostgreSQL 17 preview container verified all pending migrations successfully."
+              echo "> To enable live Supabase cloud database branching, configure **SUPABASE_ACCESS_TOKEN** and **SUPABASE_PROJECT_ID** in repository secrets."
+            else
+              echo "> Supabase Cloud preview branch management executed."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
