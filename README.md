@@ -1,6 +1,6 @@
-# Supabase Database DevOps & CI/CD Workflow Template
+# Supabase GitOps: Enterprise Database DevOps & CI/CD
 
-A production-ready **Database-as-Code (GitOps)** and DevOps automation template for **Supabase PostgreSQL**.
+An enterprise-grade, open-source **Database-as-Code (GitOps)** and continuous database deployment platform for **Supabase PostgreSQL**.
 
 Provides reliable bi-directional synchronization between GitHub and Supabase:
 - **Deploy forward**: Preview and apply version-controlled SQL migrations with automated pre-migration safety backups.
@@ -17,8 +17,13 @@ Provides reliable bi-directional synchronization between GitHub and Supabase:
 
 ## Quickstart
 
-### Step 1: Use this template
-Click the **"Use this template"** button at the top of this repository (or clone it).
+### Step 1: Fork and Clone
+Fork this repository to your GitHub account and clone your fork locally:
+
+```bash
+git clone https://github.com/AniruthKarthik/supabase-gitops.git
+cd supabase-gitops
+```
 
 ### Step 2: Configure GitHub Secrets
 Go to your repo: **Settings > Secrets and variables > Actions > New repository secret** and add:
