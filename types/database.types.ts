@@ -19,6 +19,26 @@ export type Database = {
                   Relationships: [
                     
                   ]
+                },"user_settings": {
+                  Row: {
+                    "created_at": string,"id": string,"notifications_enabled": boolean,"profile_id": string,"theme": string,"updated_at": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "created_at"?: string,"id"?: string,"notifications_enabled"?: boolean,"profile_id": string,"theme"?: string,"updated_at"?: string
+                  }
+                  Update: {
+                    "created_at"?: string,"id"?: string,"notifications_enabled"?: boolean,"profile_id"?: string,"theme"?: string,"updated_at"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "user_settings_profile_id_fkey"
+      columns: ["profile_id"]
+isOneToOne: false
+      referencedRelation: "profiles"
+      referencedColumns: ["id"]
+    }
+                  ]
                 }
           }
           Views: {
