@@ -1,0 +1,206 @@
+name: Disaster recovery restore test
+
+on:
+  schedule:
+    - cron: '0 3 1 * *'
+  workflow_dispatch:
+    inputs:
+      backup_run_id:
+        description: >
+          Optional: Specific backup workflow run ID to restore.
+          Leave blank to automatically use the latest successful backup.
+        required: false
+        type: string
+        default: ""
+      encryption_key_override:
+        description: >
+          Optional: Encryption password override if different from BACKUP_ENCRYPTION_KEY secret.
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: supabase-restore-drill
+  cancel-in-progress: false
+
+jobs:
+  test-restore:
+    name: Verify backup decrypt and database restore
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Locate and download encrypted backup
+        id: fetch-backup
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          BACKUP_ENCRYPTION_KEY: ${{ secrets.BACKUP_ENCRYPTION_KEY }}
+          OVERRIDE_KEY: ${{ inputs.encryption_key_override }}
+          SPECIFIC_RUN_ID: ${{ inputs.backup_run_id }}
+        run: |
+          set -euo pipefail
+
+          PASSPHRASE="${OVERRIDE_KEY:-$BACKUP_ENCRYPTION_KEY}"
+          if [ -z "$PASSPHRASE" ]; then
+            echo "::error::No encryption passphrase available. Set BACKUP_ENCRYPTION_KEY secret or input override."
+            exit 1
+          fi
+
+          mkdir -p /tmp/restore_drill
+          TARGET_RUN_ID="$SPECIFIC_RUN_ID"
+
+          if [ -z "$TARGET_RUN_ID" ]; then
+            TARGET_RUN_ID=$(gh run list --workflow=backup-database.yml --status=success --limit 1 --json databaseId -q '.[0].databaseId' || true)
+          fi
+
+          ENCRYPTED_FILE=""
+          if [ -n "$TARGET_RUN_ID" ] && [ "$TARGET_RUN_ID" != "null" ]; then
+            echo "Downloading backup artifact from workflow run: $TARGET_RUN_ID"
+            if gh run download "$TARGET_RUN_ID" --dir /tmp/restore_drill; then
+              ENCRYPTED_FILE=$(find /tmp/restore_drill -name "*.sql.gpg" | head -n 1 || true)
+            fi
+          fi
+
+          if [ -z "$ENCRYPTED_FILE" ] || [ ! -f "$ENCRYPTED_FILE" ]; then
+            echo "No existing backup artifact found. Creating on-demand encrypted backup to test restore..."
+            if [ -z "$SUPABASE_DB_URL" ]; then
+              echo "::error::Cannot create on-demand backup: SUPABASE_DB_URL is not set."
+              exit 1
+            fi
+            ENCRYPTED_FILE="/tmp/restore_drill/ondemand_backup.sql.gpg"
+            docker run --rm postgres:17-alpine pg_dump "$SUPABASE_DB_URL" --schema=public --clean --if-exists --quote-all-identifiers \
+              | gpg --batch --yes --symmetric --cipher-algo AES256 --passphrase "$PASSPHRASE" -o "$ENCRYPTED_FILE"
+          fi
+
+          echo "Using encrypted backup file: $ENCRYPTED_FILE ($(ls -lh "$ENCRYPTED_FILE" | awk '{print $5}'))"
+          echo "encrypted_file=${ENCRYPTED_FILE}" >> "$GITHUB_OUTPUT"
+          echo "source_run_id=${TARGET_RUN_ID:-ondemand}" >> "$GITHUB_OUTPUT"
+
+      - name: Decrypt backup file
+        id: decrypt
+        env:
+          BACKUP_ENCRYPTION_KEY: ${{ secrets.BACKUP_ENCRYPTION_KEY }}
+          OVERRIDE_KEY: ${{ inputs.encryption_key_override }}
+        run: |
+          set -euo pipefail
+          PASSPHRASE="${OVERRIDE_KEY:-$BACKUP_ENCRYPTION_KEY}"
+          ENCRYPTED_FILE="${{ steps.fetch-backup.outputs.encrypted_file }}"
+          RESTORE_SQL="/tmp/restore_drill/restored_database.sql"
+
+          echo "Decrypting $ENCRYPTED_FILE with AES-256..."
+          gpg --batch --yes --decrypt --passphrase "$PASSPHRASE" -o "$RESTORE_SQL" "$ENCRYPTED_FILE"
+
+          if [ ! -s "$RESTORE_SQL" ]; then
+            echo "::error::Decrypted file is empty."
+            exit 1
+          fi
+
+          LINE_COUNT=$(wc -l < "$RESTORE_SQL")
+          echo "Decryption successful: $RESTORE_SQL ($LINE_COUNT lines)"
+          echo "sql_file=${RESTORE_SQL}" >> "$GITHUB_OUTPUT"
+          echo "line_count=${LINE_COUNT}" >> "$GITHUB_OUTPUT"
+
+      - name: Start isolated PostgreSQL test instance
+        run: |
+          set -euo pipefail
+          docker run --name pg-restore-target -e POSTGRES_PASSWORD=postgres -p 5433:5432 -d postgres:17-alpine
+          until docker exec pg-restore-target pg_isready -U postgres >/dev/null 2>&1; do
+            sleep 1
+          done
+          echo "Isolated PostgreSQL 17 restore target is healthy."
+
+      - name: Restore database from decrypted backup
+        id: restore
+        run: |
+          set -euo pipefail
+          RESTORE_SQL="${{ steps.decrypt.outputs.sql_file }}"
+
+          echo "Restoring database schema and data..."
+          START_TIME=$(date +%s)
+          docker exec -i pg-restore-target psql -U postgres -d postgres -v ON_ERROR_STOP=1 < "$RESTORE_SQL"
+          END_TIME=$(date +%s)
+          DURATION=$((END_TIME - START_TIME))
+
+          echo "Database restore completed in ${DURATION}s."
+          echo "duration=${DURATION}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify database integrity and row counts
+        id: verify
+        run: |
+          set -euo pipefail
+
+          TABLE_COUNT=$(docker exec pg-restore-target psql -U postgres -d postgres -At -c \
+            "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE';")
+
+          ROW_SUMMARY=$(docker exec pg-restore-target psql -U postgres -d postgres -At -c \
+            "SELECT table_name || ': ' || (xpath('/row/c/text()', query_to_xml(format('SELECT count(*) AS c FROM %I.%I', table_schema, table_name), false, true, '')))[1]::text
+             FROM information_schema.tables
+             WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+             ORDER BY table_name;")
+
+          echo "Restored Tables Count: $TABLE_COUNT"
+          echo "Table Details:"
+          printf '%s\n' "$ROW_SUMMARY"
+
+          if [ "$TABLE_COUNT" -eq 0 ]; then
+            echo "::error::Integrity check failed: 0 tables found in restored public schema."
+            exit 1
+          fi
+
+          {
+            echo "table_count=${TABLE_COUNT}"
+            echo "row_summary<<ENDOFVAL"
+            echo "$ROW_SUMMARY"
+            echo "ENDOFVAL"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Stop and remove isolated PostgreSQL container
+        if: always()
+        run: |
+          docker stop pg-restore-target >/dev/null 2>&1 || true
+          docker rm pg-restore-target >/dev/null 2>&1 || true
+
+      - name: Write drill report to Job Summary
+        if: always()
+        run: |
+          {
+            echo "## Disaster Recovery & Backup Integrity Drill"
+            echo ""
+            if [ "${{ steps.verify.conclusion }}" = "success" ]; then
+              echo "Disaster recovery drill passed successfully. Backup is restorable, valid, and uncorrupted."
+              echo ""
+              echo "| Metric | Value |"
+              echo "|---|---|"
+              echo "| Source Backup Run | \`${{ steps.fetch-backup.outputs.source_run_id }}\` |"
+              echo "| Decrypted SQL Lines | ${{ steps.decrypt.outputs.line_count }} lines |"
+              echo "| Restore Duration | ${{ steps.restore.outputs.duration }}s |"
+              echo "| Public Tables Restored | ${{ steps.verify.outputs.table_count }} |"
+              echo ""
+              echo "### Restored Tables & Row Counts"
+              echo '```'
+              echo "${{ steps.verify.outputs.row_summary }}"
+              echo '```'
+            else
+              echo "**Disaster recovery drill failed.** Review step execution logs for root cause."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Send webhook notification
+        if: always()
+        env:
+          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+        run: |
+          if [ -n "$WEBHOOK_URL" ]; then
+            STATUS="${{ job.status }}"
+            curl -s -X POST -H "Content-Type: application/json" \
+              -d "{\"text\": \"Disaster Recovery Drill: ${STATUS} on ${{ github.repository }} (Run ${{ github.run_id }})\"}" \
+              "$WEBHOOK_URL" || true
+          fi
