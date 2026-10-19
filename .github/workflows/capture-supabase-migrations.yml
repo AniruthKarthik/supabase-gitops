@@ -381,7 +381,7 @@ jobs:
 
           git pull --rebase --autostash origin master
 
-          git push origin master
+          git push origin HEAD:master
 
       - name: Write job summary
         if: always()
