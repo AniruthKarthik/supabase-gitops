@@ -1,18 +1,23 @@
 name: Deploy database migrations
 
 on:
+  push:
+    branches:
+      - master
+    paths:
+      - 'supabase/migrations/**'
   workflow_dispatch:
     inputs:
       confirm:
         description: >
           Type "deploy" to confirm you want to apply pending migrations to the
           production Supabase database. Review the preview job output first.
-        required: true
+        required: false
         type: string
         default: ""
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: supabase-production-migrations
@@ -50,7 +55,7 @@ jobs:
             if grep -q "No migrations to apply" /tmp/preview.txt 2>/dev/null; then
               echo "> Nothing to deploy. All local migrations are already applied."
             else
-              echo "> To apply, re-trigger this workflow and type **deploy** in the confirm field."
+              echo "> To apply, re-trigger this workflow and type **deploy** in the confirm field (or set AUTO_DEPLOY variable)."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -59,7 +64,7 @@ jobs:
     needs: preview
     if: >
       github.ref == 'refs/heads/master' &&
-      inputs.confirm == 'deploy'
+      (inputs.confirm == 'deploy' || (github.event_name == 'push' && vars.AUTO_DEPLOY == 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -109,6 +114,27 @@ jobs:
             echo "ENDOFVAL"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Auto-sync TypeScript types
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          set -euo pipefail
+          mkdir -p types
+          supabase gen types --lang=typescript --db-url "$SUPABASE_DB_URL" --schema public > types/database.types.ts
+          echo "Generated types/database.types.ts ($(wc -l < types/database.types.ts) lines)"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add types/database.types.ts
+          if git diff --cached --quiet; then
+            echo "TypeScript types are already up-to-date."
+          else
+            git commit -m "chore(types): auto-sync database.types.ts after deployment"
+            git pull --rebase --autostash origin master
+            git push origin master
+            echo "Successfully committed and pushed updated TypeScript types."
+          fi
+
       - name: Write job summary
         if: always()
         run: |
@@ -118,9 +144,11 @@ jobs:
             echo "| Field | Value |"
             echo "|---|---|"
             echo "| Triggered by | ${{ github.actor }} |"
+            echo "| Trigger Event | ${{ github.event_name }} |"
             echo "| Commit | \`${{ github.sha }}\` |"
             echo "| Run | [${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |"
             echo "| Backup artifact | pre-migration-backup-${{ github.run_id }} |"
+            echo "| TypeScript Types | Automatically synchronized to \`types/database.types.ts\` |"
             echo ""
             echo "### Migration state after deploy"
             echo '```'
@@ -139,4 +167,3 @@ jobs:
               -d "{\"text\": \"Deploy database migrations: ${STATUS} on ${{ github.repository }} (Run ${{ github.run_id }})\"}" \
               "$WEBHOOK_URL" || true
           fi
-

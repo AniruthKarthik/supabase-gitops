@@ -42,9 +42,10 @@ By default, **no workflows run on a schedule** to avoid consuming runner minutes
 
 To activate automated recurring runs, navigate to **Settings > Secrets and variables > Actions > Variables** and create any of the following repository variables:
 
-| Repository Variable | Purpose | Default Frequency |
+| Repository Variable | Purpose | Default Setting |
 |---|---|---|
-| `ENABLE_ALL_SCHEDULES` | Set to `true` to enable all automated recurring tasks | All below |
+| `AUTO_DEPLOY` | Set to `true` to auto-deploy migrations on merge to `master` | Off (requires manual confirmation `deploy`) |
+| `ENABLE_ALL_SCHEDULES` | Set to `true` to enable all automated recurring tasks | Off (no schedules run by default) |
 | `ENABLE_SCHEDULED_BACKUPS` | Set to `true` to enable automated encrypted backups | Every Sunday at 02:00 UTC |
 | `ENABLE_SCHEDULED_DRIFT_ALERTS` | Set to `true` to enable automated schema drift audits | Every Monday at 04:00 UTC |
 | `ENABLE_SCHEDULED_RESTORE_DRILLS` | Set to `true` to enable automated disaster recovery drills | 1st of every month at 03:00 UTC |
@@ -86,10 +87,11 @@ types/
 
 ### 1. Deploy Database Migrations (`deploy-migrations.yml`)
 Pushes local migration files to the remote Supabase database:
-- **Trigger**: Manual (`workflow_dispatch`) with confirmation `deploy`.
+- **Trigger**: Manual (`workflow_dispatch`) with confirmation `deploy`, or automatically on `push` to `master` when `AUTO_DEPLOY = true`.
 - **Pre-migration Safety**: Automatically creates a schema backup artifact before applying changes.
 - **Dry-run Preview**: Shows a dry-run preview of pending migrations.
 - **Verification**: Outputs a post-deploy verification table comparing local and remote migration versions.
+- **Post-Deploy Contract Sync**: Automatically regenerates and commits updated TypeScript definitions (`types/database.types.ts`) immediately upon deployment.
 
 ---
 

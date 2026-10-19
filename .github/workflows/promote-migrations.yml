@@ -11,7 +11,7 @@ on:
         default: ""
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: supabase-promotion-pipeline
@@ -122,6 +122,27 @@ jobs:
           name: pre-production-backup-${{ github.run_id }}
           path: /tmp/production/pre_deploy_production.sql
           retention-days: 30
+
+      - name: Auto-sync TypeScript types
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          set -euo pipefail
+          mkdir -p types
+          supabase gen types --lang=typescript --db-url "$SUPABASE_DB_URL" --schema public > types/database.types.ts
+          echo "Generated types/database.types.ts ($(wc -l < types/database.types.ts) lines)"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add types/database.types.ts
+          if git diff --cached --quiet; then
+            echo "TypeScript types are already up-to-date."
+          else
+            git commit -m "chore(types): auto-sync database.types.ts after production promotion"
+            git pull --rebase --autostash origin master
+            git push origin master
+            echo "Successfully committed and pushed updated TypeScript types."
+          fi
 
       - name: Publish pipeline summary
         if: always()
