@@ -77,6 +77,7 @@ supabase/
   seed.sql                       # Sample seed data for local development
   migrations/
     20261019000000_initial.sql   # Starter migration (profiles table with RLS)
+    20261019120000_user_settings.sql # User settings table with foreign key and RLS
 types/
   database.types.ts              # Auto-generated TypeScript definitions
 ```
