@@ -30,6 +30,7 @@ concurrency:
 jobs:
   test-restore:
     name: Verify backup decrypt and database restore
+    if: github.event_name != 'schedule' || vars.ENABLE_ALL_SCHEDULES == 'true' || vars.ENABLE_SCHEDULED_RESTORE_DRILLS == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
 

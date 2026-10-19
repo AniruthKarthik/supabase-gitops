@@ -37,6 +37,18 @@ Go to your repo: **Settings > Secrets and variables > Actions > New repository s
 ### Step 3: Configure Workflow Permissions
 In repository **Settings > Actions > General > Workflow permissions**, select **"Read and write permissions"** so GitHub Actions can commit updated TypeScript definitions and schema documentation.
 
+### Step 4: (Optional) Enable Scheduled Workflows
+By default, **no workflows run on a schedule** to avoid consuming runner minutes or running before configuration. All workflows can be triggered manually on-demand at any time.
+
+To activate automated recurring runs, navigate to **Settings > Secrets and variables > Actions > Variables** and create any of the following repository variables:
+
+| Repository Variable | Purpose | Default Frequency |
+|---|---|---|
+| `ENABLE_ALL_SCHEDULES` | Set to `true` to enable all automated recurring tasks | All below |
+| `ENABLE_SCHEDULED_BACKUPS` | Set to `true` to enable automated encrypted backups | Every Sunday at 02:00 UTC |
+| `ENABLE_SCHEDULED_DRIFT_ALERTS` | Set to `true` to enable automated schema drift audits | Every Monday at 04:00 UTC |
+| `ENABLE_SCHEDULED_RESTORE_DRILLS` | Set to `true` to enable automated disaster recovery drills | 1st of every month at 03:00 UTC |
+
 ---
 
 ## Repository Structure

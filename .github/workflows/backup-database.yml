@@ -23,6 +23,7 @@ concurrency:
 jobs:
   backup:
     name: Create encrypted database backup
+    if: github.event_name != 'schedule' || vars.ENABLE_ALL_SCHEDULES == 'true' || vars.ENABLE_SCHEDULED_BACKUPS == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
