@@ -71,7 +71,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
+          ref: master
 
       - name: Set up Supabase CLI
         uses: supabase/setup-cli@v1
@@ -131,7 +131,7 @@ jobs:
           else
             git commit -m "chore(types): auto-sync database.types.ts after deployment"
             git pull --rebase --autostash origin master
-            git push origin master
+            git push origin HEAD:master
             echo "Successfully committed and pushed updated TypeScript types."
           fi
 
