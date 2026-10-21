@@ -44,6 +44,19 @@ BEGIN
   EXCEPTION WHEN OTHERS THEN
     NULL;
   END;
+
+  -- Ensure service_role and supabase_admin have BYPASSRLS matching Supabase platform architecture
+  BEGIN
+    ALTER ROLE service_role BYPASSRLS;
+  EXCEPTION WHEN OTHERS THEN
+    NULL;
+  END;
+
+  BEGIN
+    ALTER ROLE supabase_admin BYPASSRLS;
+  EXCEPTION WHEN OTHERS THEN
+    NULL;
+  END;
 END $$;
 
 -- -----------------------------------------------------------------------------
