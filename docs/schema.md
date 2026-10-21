@@ -1,14 +1,5 @@
 # Database Schema Documentation
 
-> Auto-generated from database schema on `2026-10-19 19:29:49 UTC`.
+> Auto-generated on `2026-10-21 06:51:24 UTC`.
 
-## Entity Relationship Diagram
-
-```mermaid
-erDiagram
-```
-
----
-
-## Tables Directory
-
+*No public tables detected. Add migration files to `supabase/migrations/` and apply them to generate entity relationship diagrams and schema documentation.*
