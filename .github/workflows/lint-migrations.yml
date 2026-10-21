@@ -75,6 +75,7 @@ jobs:
       - name: Write lint job summary
         if: always()
         run: |
+          set -euo pipefail
           {
             echo "## Fast DDL & Syntax Verification (Vanilla PostgreSQL 17 Container)"
             echo ""

@@ -228,6 +228,7 @@ jobs:
       - name: Write job summary
         if: always()
         run: |
+          set -euo pipefail
           {
             echo "## Deploy database migrations"
             echo ""
@@ -251,7 +252,8 @@ jobs:
         env:
           WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
         run: |
-          if [ -n "$WEBHOOK_URL" ]; then
+          set -euo pipefail
+          if [ -n "${WEBHOOK_URL:-}" ]; then
             STATUS="${{ job.status }}"
             curl -s -X POST -H "Content-Type: application/json" \
               -d "{\"text\": \"Deploy database migrations: ${STATUS} on ${{ github.repository }} (Run ${{ github.run_id }})\"}" \
