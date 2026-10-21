@@ -247,11 +247,22 @@ Proves backup integrity and disaster recovery readiness:
 
 ---
 
-### 5. PR Migration Testing (`lint-migrations.yml`)
+### 5. PR Migration Testing & Lifecycle Integration (`lint-migrations.yml`)
 Runs automatically on every Pull Request modifying `supabase/migrations/**`:
-- Verifies migration filenames follow the `YYYYMMDDHHMMSS_name.sql` standard.
-- Spins up an ephemeral PostgreSQL 17 test container.
-- Applies all migrations in sequence to verify syntax, foreign keys, and constraint integrity before merging.
+- **Naming Standard**: Verifies migration filenames strictly follow the `YYYYMMDDHHMMSS_name.sql` standard.
+- **Destructive Change Linting**: Scans SQL for `DROP TABLE`, `DROP COLUMN`, `TRUNCATE`, and `DROP SCHEMA` to flag destructive operations for peer review.
+- **Automated Lifecycle Integration Suite**: Runs `scripts/test_local_migrations.sh` to test clean database baseline creation, sequential migration application, seed data insertion, and transactional rollback upon syntax failure.
+- **Fidelity Boundary**: Executes in an ephemeral `postgres:17-alpine` container with standard Supabase role and schema scaffolding. Provides rapid PR feedback (<20s) for raw PostgreSQL compatibility and constraint health without the startup latency of full cloud services.
+
+#### Environment Classification & Testing Fidelity Matrix
+
+| Tier | Runtime Environment | Fidelity Level | Scope & Capabilities | Workflows / Tools |
+|---|---|---|---|---|
+| **Fast PR Linting** | Ephemeral `postgres:17-alpine` Docker | Raw PostgreSQL 17 | Validates SQL syntax, foreign key graphs, monotonic sequence, and destructive operations in CI (<20s). | `lint-migrations.yml`, `scripts/test_local_migrations.sh` |
+| **CI Fallback Preview** | Ephemeral `postgres:17-alpine` Docker | Raw PostgreSQL 17 | Clean-slate schema build validation without requiring cloud tokens or API quotas. | `preview-database.yml` (CI mode) |
+| **Cloud Database Branch** | Supabase Cloud Database Branch | 100% Production Parity | Full Supabase platform (GoTrue auth, PostgREST API, Storage, Edge Functions, Cloud Dashboard). | `preview-database.yml` (Cloud mode) |
+| **Disaster Recovery Drill** | Ephemeral `postgres:17-alpine` Docker | Decrypted Application Data | Proves backup decryptability, table inventory, row restoration, index health, and relational queries. | `test-restore.yml`, `scripts/verify_restore_integrity.sh` |
+| **Behavioral RLS Audit** | Isolated PostgreSQL / Supabase Container | Active Runtime Security | Impersonates `anon`, `authenticated`, and `service_role` to verify positive access and cross-tenant isolation. | `rls-security-audit.yml`, `scripts/audit_rls_behavior.sql` |
 
 ---
 

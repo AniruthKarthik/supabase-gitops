@@ -97,6 +97,14 @@ jobs:
             "https://api.supabase.com/v1/projects/${PROJECT_ID}/branches" || true)
           echo "Branch API response: $BRANCH_RES"
 
+          BRANCH_DB_URL=$(echo "$BRANCH_RES" | jq -r '.db_url // empty' || true)
+          if [ -n "$BRANCH_DB_URL" ]; then
+            echo "Applying pending migrations to Cloud Preview Branch ($BRANCH_NAME)..."
+            supabase db push --db-url "$BRANCH_DB_URL"
+          else
+            echo "Cloud preview branch created ($BRANCH_NAME). If direct database URL is withheld by API, migrations can be applied via Supabase CLI branch linkage."
+          fi
+
       - name: Verify Isolated CI Container Preview
         if: steps.mode.outputs.preview_mode == 'isolated_ci' && steps.mode.outputs.action == 'create'
         run: |
