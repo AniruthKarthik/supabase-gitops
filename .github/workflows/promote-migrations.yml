@@ -160,6 +160,42 @@ jobs:
             exit 1
           fi
 
+          echo "Auditing production remote migration history..."
+          local_versions=$(
+            ls supabase/migrations/*.sql 2>/dev/null \
+              | xargs -r -I{} basename {} \
+              | grep -oP '^\d{14}' \
+              | sort -u \
+            || true
+          )
+
+          set +e
+          raw_migration_list=$(supabase migration list --db-url "$TARGET_URL" 2>&1)
+          list_exit=$?
+          set -e
+
+          if [ "$list_exit" -eq 0 ]; then
+            remote_versions=$(
+              tr -d '`' <<< "$raw_migration_list" \
+                | awk -F'|' '
+                  NF >= 2 {
+                    remote = $2
+                    gsub(/^[ \t]+|[ \t]+$/, "", remote)
+                    if (remote ~ /^[0-9]{14}$/) print remote
+                  }
+                ' \
+                | sort -u \
+              || true
+            )
+            missing_locally=$(comm -13 <(echo "$local_versions") <(echo "$remote_versions") || true)
+            if [ -n "$missing_locally" ]; then
+              echo "::warning::Reconciling unmanaged remote versions before deployment: $missing_locally"
+              for v in $missing_locally; do
+                supabase migration repair --db-url "$TARGET_URL" --status reverted "$v" || true
+              done
+            fi
+          fi
+
           echo "Backing up production schema..."
           mkdir -p /tmp/production
           supabase db dump --db-url "$TARGET_URL" -f /tmp/production/pre_deploy_production.sql
