@@ -30,19 +30,26 @@ Go to your repo: **Settings > Secrets and variables > Actions > New repository s
 
 | Secret | Description | Example / Format |
 |---|---|---|
-| `SUPABASE_DB_URL` | *(Required)* Direct PostgreSQL connection string | `postgresql://postgres.<ref>:<password>@<host>:5432/postgres` |
+| `SUPABASE_DB_URL` | *(Required)* Direct PostgreSQL connection string for production | `postgresql://postgres.<ref>:<password>@<host>:5432/postgres` |
 | `BACKUP_ENCRYPTION_KEY` | *(Required)* Master password for encrypted backups | `<strong-backup-passphrase>` |
-| `SUPABASE_STAGING_DB_URL` | *(Optional)* Staging database connection string | `postgresql://postgres.<ref>:<password>@<host>:5432/postgres` |
+| `SUPABASE_STAGING_DB_URL` | *(Required for Promotion)* Independent Staging database connection string | `postgresql://postgres.<ref>:<password>@<host>:5432/postgres` |
 | `WEBHOOK_URL` | *(Optional)* Discord or Slack webhook for notifications | `https://discord.com/api/webhooks/...` |
 | `SUPABASE_ACCESS_TOKEN` | *(Optional)* Supabase Management API token for cloud branching | `sbp_...` |
 | `SUPABASE_PROJECT_ID` | *(Optional)* Supabase project reference ID for cloud branching | `abcdefghijklmnopqrst` |
 
 > **Note on `SUPABASE_DB_URL`**: Use the **Direct Connection** or **Session Mode Pooler** string from your Supabase Dashboard (**Project Settings > Database > Connection string**). Do not use the transaction pooler on port 6543.
 
-### Step 3: Configure Workflow Permissions
+### Step 3: Configure GitHub Environments & Protection Rules
+To enforce safe multi-environment promotion from `staging` to `production`:
+1. Navigate to **Settings > Environments** in your repository.
+2. Create an environment named `staging`. Add `SUPABASE_STAGING_DB_URL` as an environment secret (or repository secret).
+3. Create an environment named `production`. Enable **Required reviewers** and select authorized database administrators. Add `SUPABASE_DB_URL` as an environment secret (or repository secret).
+4. The promotion pipeline strictly prevents staging from falling back to production: `SUPABASE_STAGING_DB_URL` must point to an independent database host or the workflow aborts before applying any changes.
+
+### Step 4: Configure Workflow Permissions
 In repository **Settings > Actions > General > Workflow permissions**, select **"Read and write permissions"** so GitHub Actions can commit updated TypeScript definitions and schema documentation.
 
-### Step 4: Initialize Migrations (First-Time Setup / Baselining)
+### Step 5: Initialize Migrations (First-Time Setup / Baselining)
 By default, this repository ships with an empty `supabase/migrations/` directory so you can connect to your project without conflicting starter migrations.
 
 Choose the path that matches your project:
@@ -84,7 +91,7 @@ git push origin master
 ```
 *To deploy your new migrations, run the **Deploy database migrations** workflow in GitHub Actions (or enable `AUTO_DEPLOY=true`).*
 
-### Step 5: (Optional) Enable Scheduled Workflows
+### Step 6: (Optional) Enable Scheduled Workflows
 By default, **no workflows run on a schedule** to avoid consuming runner minutes or running before configuration. All workflows can be triggered manually on-demand at any time.
 
 To activate automated recurring runs, navigate to **Settings > Secrets and variables > Actions > Variables** and create any of the following repository variables:
