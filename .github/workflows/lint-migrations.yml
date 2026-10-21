@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   test:
-    name: Verify migration syntax and execution
+    name: Fast DDL & Syntax Verification (Vanilla PostgreSQL 17 Container)
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -65,58 +65,25 @@ jobs:
             echo "No destructive DDL operations detected."
           fi
 
-      - name: Start temporary PostgreSQL test container
+      - name: Execute migration lifecycle integration test suite
+        id: lifecycle-test
         run: |
           set -euo pipefail
-          docker run --name pg-test -e POSTGRES_PASSWORD=postgres -p 5432:5432 -d postgres:17-alpine
-          until docker exec pg-test pg_isready -U postgres >/dev/null 2>&1 && docker exec pg-test psql -U postgres -d postgres -c "SELECT 1" >/dev/null 2>&1; do
-            sleep 1
-          done
-          sleep 2
-          for i in {1..10}; do
-            if docker exec -i pg-test psql -U postgres -d postgres << 'EOF'
-          DO $$
-          DECLARE
-            r text;
-          BEGIN
-            FOR r IN SELECT unnest(ARRAY[
-              'anon',
-              'authenticated',
-              'service_role',
-              'authenticator',
-              'supabase_admin',
-              'dashboard_user'
-            ]) LOOP
-              BEGIN
-                EXECUTE format('CREATE ROLE %I NOLOGIN', r);
-              EXCEPTION WHEN duplicate_object THEN
-                NULL;
-              END;
-            END LOOP;
-          END $$;
-          CREATE SCHEMA IF NOT EXISTS auth;
-          CREATE SCHEMA IF NOT EXISTS extensions;
-          CREATE SCHEMA IF NOT EXISTS storage;
-          CREATE SCHEMA IF NOT EXISTS graphql;
-          EOF
-            then
-              break
-            fi
-            sleep 1
-          done
-          echo "PostgreSQL test container ready."
+          chmod +x scripts/test_local_migrations.sh
+          ./scripts/test_local_migrations.sh
 
-      - name: Test apply migrations sequentially
-        run: |
-          set -euo pipefail
-          for f in $(ls supabase/migrations/*.sql 2>/dev/null | sort || true); do
-            echo "Applying: $f"
-            docker exec -i pg-test psql -U postgres -d postgres -v ON_ERROR_STOP=1 < "$f"
-          done
-          echo "All migrations applied successfully without errors."
-
-      - name: Stop test container
+      - name: Write lint job summary
         if: always()
         run: |
-          docker stop pg-test >/dev/null 2>&1 || true
-          docker rm pg-test >/dev/null 2>&1 || true
+          {
+            echo "## Fast DDL & Syntax Verification (Vanilla PostgreSQL 17 Container)"
+            echo ""
+            echo "| Test Dimension | Implementation | Fidelity |"
+            echo "|---|---|---|"
+            echo "| Runtime Environment | Ephemeral \`postgres:17-alpine\` Docker container | Vanilla PostgreSQL 17 |"
+            echo "| Filename Syntax | \`YYYYMMDDHHMMSS_name.sql\` format check | Standardized |"
+            echo "| Destructive DDL | \`DROP TABLE\`, \`DROP COLUMN\`, \`TRUNCATE\` scanner | Safety Guard |"
+            echo "| Migration Lifecycle | Clean init, DDL apply, seed, rollback test | Integration Verified |"
+            echo "| Role Scaffolding | Stubbed roles (\`anon\`, \`authenticated\`, \`service_role\`) | DDL & Grant syntax |"
+            echo "| Scope Boundary | Fast raw PostgreSQL syntax/DDL verification | *Excludes live GoTrue/PostgREST* |"
+          } >> "$GITHUB_STEP_SUMMARY"
