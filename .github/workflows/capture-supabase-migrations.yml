@@ -29,7 +29,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
-          ref: master
+          ref: ${{ github.ref }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Supabase CLI
@@ -266,15 +266,32 @@ jobs:
           echo "Running supabase db pull to capture schema drift..."
           echo "(This starts a Docker shadow container -- may take 1-2 minutes)"
 
-          pull_output=$(supabase db pull --db-url "$SUPABASE_DB_URL" 2>&1) || true
+          set +e
+          pull_output=$(supabase db pull --db-url "$SUPABASE_DB_URL" 2>&1)
+          pull_exit=$?
+          set -e
+
           printf '%s\n' "$pull_output"
+
+          if [ "$pull_exit" -ne 0 ]; then
+            echo "::error::supabase db pull failed with exit code $pull_exit."
+            {
+              echo "### Error Capturing Schema Drift"
+              echo ""
+              echo "Command \`supabase db pull\` encountered an error (exit code: $pull_exit):"
+              echo '```'
+              echo "$pull_output"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit "$pull_exit"
+          fi
 
           after=$(ls supabase/migrations/*.sql 2>/dev/null | sort || true)
 
           new_files=$(comm -13 <(echo "$before") <(echo "$after") || true)
 
           if [ -z "$new_files" ]; then
-            echo "supabase db pull completed but produced no new file."
+            echo "supabase db pull completed successfully and verified zero schema drift."
             echo "The remote schema is already fully represented by local files."
             {
               echo "new_file="
@@ -379,9 +396,9 @@ jobs:
           the original sequence of individual dashboard changes. Review carefully
           before triggering 'Deploy database migrations'."
 
-          git pull --rebase --autostash origin master
+          git pull --rebase --autostash origin ${{ github.ref_name }}
 
-          git push origin HEAD:master
+          git push origin HEAD:${{ github.ref_name }}
 
       - name: Write job summary
         if: always()
