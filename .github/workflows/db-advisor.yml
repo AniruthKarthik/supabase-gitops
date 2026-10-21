@@ -32,43 +32,8 @@ jobs:
       - name: Start isolated PostgreSQL test container
         run: |
           set -euo pipefail
-          docker run --name pg-advisor-target -e POSTGRES_PASSWORD=postgres -p 5435:5432 -d postgres:17-alpine
-          until docker exec pg-advisor-target pg_isready -U postgres >/dev/null 2>&1 && docker exec pg-advisor-target psql -U postgres -d postgres -c "SELECT 1" >/dev/null 2>&1; do
-            sleep 1
-          done
-          sleep 2
-          for i in {1..10}; do
-            if docker exec -i pg-advisor-target psql -U postgres -d postgres << 'EOF'
-          DO $$
-          DECLARE
-            r text;
-          BEGIN
-            FOR r IN SELECT unnest(ARRAY[
-              'anon',
-              'authenticated',
-              'service_role',
-              'authenticator',
-              'supabase_admin',
-              'dashboard_user'
-            ]) LOOP
-              BEGIN
-                EXECUTE format('CREATE ROLE %I NOLOGIN', r);
-              EXCEPTION WHEN duplicate_object THEN
-                NULL;
-              END;
-            END LOOP;
-          END $$;
-          CREATE SCHEMA IF NOT EXISTS auth;
-          CREATE SCHEMA IF NOT EXISTS extensions;
-          CREATE SCHEMA IF NOT EXISTS storage;
-          CREATE SCHEMA IF NOT EXISTS graphql;
-          EOF
-            then
-              break
-            fi
-            sleep 1
-          done
-          echo "Isolated PostgreSQL test container ready."
+          chmod +x scripts/init_test_pg.sh
+          ./scripts/init_test_pg.sh pg-advisor-target 5435
 
       - name: Apply migrations sequentially
         run: |
