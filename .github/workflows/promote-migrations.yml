@@ -9,6 +9,11 @@ on:
         required: true
         type: string
         default: ""
+      use_ephemeral_staging:
+        description: 'Provision an ephemeral PostgreSQL container as Staging target if SUPABASE_STAGING_DB_URL is not set'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -46,14 +51,26 @@ jobs:
           echo "Validating Staging environment configuration..."
 
           if [ -z "$STAGING_URL" ]; then
-            echo "::error::SUPABASE_STAGING_DB_URL is not configured. Staging and production databases must be configured independently."
-            {
-              echo "### Target Configuration Error"
-              echo ""
-              echo "Promotion halted: \`SUPABASE_STAGING_DB_URL\` secret is missing."
-              echo "The staging promotion pipeline enforces strict environment isolation and cannot fall back to production."
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit 1
+            if [ "${{ inputs.use_ephemeral_staging }}" = "true" ]; then
+              echo "Starting ephemeral staging PostgreSQL instance for promotion validation..."
+              chmod +x scripts/init_test_pg.sh
+              ./scripts/init_test_pg.sh pg-staging-ephemeral 5437
+              STAGING_URL="postgresql://postgres:postgres@localhost:5437/postgres?sslmode=disable"
+              echo "RESOLVED_STAGING_URL=$STAGING_URL" >> "$GITHUB_ENV"
+              echo "Ephemeral staging container initialized on port 5437."
+            else
+              echo "::error::SUPABASE_STAGING_DB_URL is not configured. Staging and production databases must be configured independently."
+              {
+                echo "### Target Configuration Error"
+                echo ""
+                echo "Promotion halted: \`SUPABASE_STAGING_DB_URL\` secret is missing."
+                echo "The staging promotion pipeline enforces strict environment isolation and cannot fall back to production."
+                echo "To test promotion without a remote staging instance, enable \`use_ephemeral_staging\` in workflow inputs."
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+          else
+            echo "RESOLVED_STAGING_URL=$STAGING_URL" >> "$GITHUB_ENV"
           fi
 
           if ! [[ "$STAGING_URL" =~ ^postgres(ql)?:// ]]; then
@@ -81,7 +98,7 @@ jobs:
       - name: Deploy to Staging
         id: staging-deploy
         env:
-          TARGET_URL: ${{ secrets.SUPABASE_STAGING_DB_URL }}
+          TARGET_URL: ${{ env.RESOLVED_STAGING_URL }}
         run: |
           set -euo pipefail
 
