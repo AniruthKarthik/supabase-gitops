@@ -20,9 +20,7 @@ concurrency:
 jobs:
   deploy-staging:
     name: Deploy migrations to Staging environment
-    if: >
-      github.ref == 'refs/heads/master' &&
-      inputs.confirm == 'promote'
+    if: inputs.confirm == 'promote'
     runs-on: ubuntu-latest
     environment: staging
     timeout-minutes: 15
@@ -31,23 +29,61 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
-          ref: master
+          ref: ${{ github.ref }}
 
       - name: Set up Supabase CLI
         uses: supabase/setup-cli@v1
         with:
           version: 2.121.0
 
+      - name: Validate Staging environment configuration
+        id: validate-staging
+        env:
+          STAGING_URL: ${{ secrets.SUPABASE_STAGING_DB_URL }}
+          PROD_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          set -euo pipefail
+          echo "Validating Staging environment configuration..."
+
+          if [ -z "$STAGING_URL" ]; then
+            echo "::error::SUPABASE_STAGING_DB_URL is not configured. Staging and production databases must be configured independently."
+            {
+              echo "### Target Configuration Error"
+              echo ""
+              echo "Promotion halted: \`SUPABASE_STAGING_DB_URL\` secret is missing."
+              echo "The staging promotion pipeline enforces strict environment isolation and cannot fall back to production."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          if ! [[ "$STAGING_URL" =~ ^postgres(ql)?:// ]]; then
+            echo "::error::SUPABASE_STAGING_DB_URL is not a valid PostgreSQL connection URI."
+            exit 1
+          fi
+
+          if [ -n "$PROD_URL" ]; then
+            STAGING_HOST=$(echo "$STAGING_URL" | sed -E 's|.*@([^:/]+).*|\1|')
+            PROD_HOST=$(echo "$PROD_URL" | sed -E 's|.*@([^:/]+).*|\1|')
+            if [ "$STAGING_HOST" = "$PROD_HOST" ] && [ -n "$STAGING_HOST" ]; then
+              echo "::error::Target Collision: SUPABASE_STAGING_DB_URL points to the same host as SUPABASE_DB_URL ($STAGING_HOST)."
+              {
+                echo "### Target Collision Detected"
+                echo ""
+                echo "Promotion halted: Staging points to the same database host as production (\`$STAGING_HOST\`)."
+                echo "Staging must target an independent database instance to protect production integrity."
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+          fi
+
+          echo "Staging environment configuration validated successfully."
+
       - name: Deploy to Staging
         id: staging-deploy
         env:
-          TARGET_URL: ${{ secrets.SUPABASE_STAGING_DB_URL || secrets.SUPABASE_DB_URL }}
+          TARGET_URL: ${{ secrets.SUPABASE_STAGING_DB_URL }}
         run: |
           set -euo pipefail
-          if [ -z "$TARGET_URL" ]; then
-            echo "::error::No staging database URL configured."
-            exit 1
-          fi
 
           echo "Backing up staging schema..."
           mkdir -p /tmp/staging
@@ -88,7 +124,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
-          ref: master
+          ref: ${{ github.ref }}
 
       - name: Set up Supabase CLI
         uses: supabase/setup-cli@v1
@@ -139,8 +175,8 @@ jobs:
             echo "TypeScript types are already up-to-date."
           else
             git commit -m "chore(types): auto-sync database.types.ts after production promotion"
-            git pull --rebase --autostash origin master
-            git push origin HEAD:master
+            git pull --rebase --autostash origin ${{ github.ref_name }}
+            git push origin HEAD:${{ github.ref_name }}
             echo "Successfully committed and pushed updated TypeScript types."
           fi
 
