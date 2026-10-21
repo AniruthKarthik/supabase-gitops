@@ -55,6 +55,8 @@ jobs:
                 NULL;
               END;
             END LOOP;
+            EXECUTE 'ALTER ROLE service_role BYPASSRLS';
+            EXECUTE 'ALTER ROLE supabase_admin BYPASSRLS';
           END $$;
           CREATE SCHEMA IF NOT EXISTS auth;
           CREATE SCHEMA IF NOT EXISTS extensions;
