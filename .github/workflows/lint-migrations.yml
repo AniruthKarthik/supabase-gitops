@@ -34,6 +34,37 @@ jobs:
           done
           [ "$invalid" -eq 0 ] || exit 1
 
+      - name: Scan for destructive DDL operations
+        id: destructive-check
+        run: |
+          set -euo pipefail
+          echo "Scanning migrations for destructive DDL operations..."
+          destructive_ops=""
+          for f in supabase/migrations/*.sql; do
+            [ -e "$f" ] || continue
+            filename=$(basename "$f")
+            for pattern in 'DROP TABLE' 'DROP COLUMN' 'TRUNCATE' 'DROP SCHEMA' 'DROP DATABASE'; do
+              if grep -qiE "^[[:space:]]*${pattern}" "$f"; then
+                matches=$(grep -n -iE "^[[:space:]]*${pattern}" "$f" | awk '{print "Line " $0}')
+                destructive_ops="${destructive_ops}File: ${filename}\n${matches}\n"
+                echo "::warning file=$f::Destructive DDL detected: '${pattern}' in $filename"
+              fi
+            done
+          done
+
+          if [ -n "$destructive_ops" ]; then
+            {
+              echo "### Destructive DDL Warning"
+              echo ""
+              echo "> Warning: Destructive operations were detected in migration files. Ensure peer review and data backup before deployment:"
+              echo '```'
+              printf '%b' "$destructive_ops"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No destructive DDL operations detected."
+          fi
+
       - name: Start temporary PostgreSQL test container
         run: |
           set -euo pipefail

@@ -165,8 +165,16 @@ jobs:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
           set -euo pipefail
+          echo "Creating pre-migration safety schema backup..."
           supabase db dump --db-url "$SUPABASE_DB_URL" -f /tmp/backup_schema.sql
-          echo "Schema backup written to /tmp/backup_schema.sql ($(wc -l < /tmp/backup_schema.sql) lines)"
+
+          if [ ! -s /tmp/backup_schema.sql ]; then
+            echo "::error::Pre-migration schema backup is empty! Deployment aborted for safety."
+            exit 1
+          fi
+
+          LINE_COUNT=$(wc -l < /tmp/backup_schema.sql)
+          echo "Schema backup verified: /tmp/backup_schema.sql ($LINE_COUNT lines)"
 
       - name: Upload pre-migration schema backup
         uses: actions/upload-artifact@v4

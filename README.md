@@ -145,6 +145,29 @@ Pushes local migration files to the remote Supabase database:
 - **Dry-run Preview**: Shows a dry-run preview of pending migrations.
 - **Verification**: Outputs a post-deploy verification table comparing local and remote migration versions.
 - **Post-Deploy Contract Sync**: Automatically regenerates and commits updated TypeScript definitions (`types/database.types.ts`) immediately upon deployment.
+- **Pre-deployment History Audit**: Validates monotonic migration timestamps and blocks deployment if remote database has unmanaged applied migrations.
+- **Destructive DDL Safeguards**: Warns and highlights destructive SQL (`DROP TABLE`, `DROP COLUMN`, `TRUNCATE`).
+
+#### PostgreSQL DDL Transactionality & Failure Recovery
+In PostgreSQL, most DDL statements (`CREATE TABLE`, `ALTER TABLE ... ADD COLUMN`, `DROP TABLE`) are transactional and automatically roll back if an error occurs within the migration script.
+
+> [!WARNING]
+> **Non-Transactional DDL**: Certain statements cannot execute inside a multi-statement transaction or cannot be rolled back if an error occurs later in the script:
+> - `CREATE INDEX CONCURRENTLY` / `DROP INDEX CONCURRENTLY`
+> - `VACUUM` / `CLUSTER`
+> - `ALTER TYPE ... ADD VALUE` (when new values are referenced within the same transaction)
+
+**Recovery Runbook for Failed Deployments**:
+1. Download the pre-migration schema artifact (`pre-migration-backup-<run_id>`) from the failed workflow run.
+2. If non-transactional operations partially modified the remote database, restore the pre-migration snapshot:
+   ```bash
+   psql "$SUPABASE_DB_URL" < pre_migration_backup.sql
+   ```
+3. Mark the failed migration reverted in the remote history table:
+   ```bash
+   supabase migration repair --status reverted <FAILED_VERSION_ID> --db-url "$SUPABASE_DB_URL"
+   ```
+4. Correct the migration SQL in your local branch, test locally with `supabase start`, and re-deploy.
 
 ---
 
