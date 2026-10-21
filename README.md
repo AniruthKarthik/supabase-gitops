@@ -5,7 +5,7 @@ An enterprise-grade, open-source **Database-as-Code (GitOps)** and continuous da
 Provides reliable bi-directional synchronization between GitHub and Supabase:
 - **Deploy forward**: Preview and apply version-controlled SQL migrations with automated pre-migration safety backups.
 - **Capture drift**: Pull schema changes made in the Supabase Dashboard back into Git migration files using shadow database verification.
-- **Automated backups**: Weekly encrypted full-database backups (schema + data) with AES-256 cipher, zero data leakage in Git, and 90-day retention.
+- **Automated backups**: Weekly encrypted application-schema backups (`public` schema and data) with AES-256 cipher, zero data leakage in Git, and 90-day retention.
 - **Disaster recovery drills**: Automated decryption and containerized restore verification to prove backup viability.
 - **Security & compliance**: Automated Row Level Security (RLS) enforcement gates on pull requests.
 - **Multi-environment promotion**: Two-stage staging to production pipeline with GitHub Environment protection.
@@ -181,10 +181,24 @@ Brings visual schema changes made directly in the Supabase Dashboard back into v
 ---
 
 ### 3. Encrypted Database Backups (`backup-database.yml`)
-Creates a full snapshot of the remote PostgreSQL database (schema + all table rows):
+Creates an encrypted application-schema backup (`public` schema structure, sequences, triggers, and all table rows) with AES-256 cipher:
 - **Trigger**: Weekly automated schedule (every Sunday at 02:00 UTC) or manual on-demand trigger.
-- **Zero-Trust Encryption**: Uses `postgres:17-alpine` Docker container to run `pg_dump`, streaming output directly into `gpg` with **AES-256 symmetric encryption**.
-- **Clean Git**: Backups are stored as downloadable GitHub Actions Artifacts (retained for 90 days).
+- **Zero-Trust Encryption**: Uses `postgres:17-alpine` Docker container to run `pg_dump`, streaming output directly into `gpg` with **AES-256 symmetric encryption** via secure file descriptor piping (`--passphrase-fd 3`).
+- **Clean Git**: Backups are stored as downloadable GitHub Actions Artifacts (retained for 90 days), preventing raw data from entering git history.
+
+#### Backup & Recovery Boundaries
+
+| Boundary Dimension | Scope & Behavior | Rationale / Prerequisite |
+|---|---|---|
+| **Included in Backup** | `public` schema tables, data rows, sequences, foreign keys, triggers, and custom functions | Captures all core business domain data and application state without triggering privilege errors. |
+| **Excluded: `auth` Schema** | GoTrue identities, encrypted passwords, sessions, refresh tokens, MFA credentials | Managed by Supabase GoTrue; requires superuser/bypassrls to dump directly. Must be exported via Supabase Management API (`/v1/projects/{ref}/users`) or admin scripts. |
+| **Excluded: `storage` Schema** | Storage bucket metadata and object tables (`storage.buckets`, `storage.objects`) | Underlying binary assets reside in S3-compatible object storage. Object storage must be replicated separately (e.g. via AWS CLI or rclone). |
+| **Excluded: `vault` Schema** | Encrypted secrets and KMS keys managed by `pgsodium` | Decryption keys reside in Supabase Key Management System. Master secrets must be stored in external secret managers (e.g. GitHub Secrets). |
+| **Excluded: Platform Schemas** | `graphql`, `realtime`, `pg_catalog`, `information_schema`, `supabase_functions` | Ephemeral or managed system schemas recreated automatically by the Supabase platform runtime. |
+
+> [!NOTE]
+> **Why `public` schema only?**
+> On hosted Supabase instances (and AWS RDS / PostgreSQL-as-a-Service generally), connection strings connect via standard project roles (e.g., `postgres` or connection poolers). These roles lack superuser privileges to dump platform-owned schemas without throwing permission violations. Restricting the automated snapshot to `--schema=public` ensures reliable, clean backups without permission failures.
 
 ---
 
