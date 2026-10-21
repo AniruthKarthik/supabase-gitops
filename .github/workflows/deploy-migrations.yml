@@ -26,19 +26,101 @@ concurrency:
 jobs:
   preview:
     name: Preview pending migrations
-    if: github.ref == 'refs/heads/master'
+    if: github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/heads/test/')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ github.ref }}
 
       - name: Set up Supabase CLI
         uses: supabase/setup-cli@v1
         with:
           version: 2.121.0
+
+      - name: Validate migration file naming and sequence
+        run: |
+          set -euo pipefail
+          echo "Validating migration filenames and monotonic sequence..."
+          prev_timestamp=""
+          for f in supabase/migrations/*.sql; do
+            [ -e "$f" ] || continue
+            filename=$(basename "$f")
+            if [[ ! "$filename" =~ ^[0-9]{14}_[a-z0-9_]+\.sql$ ]]; then
+              echo "::error::Invalid migration filename: $filename (must match YYYYMMDDHHMMSS_name.sql)"
+              exit 1
+            fi
+            curr_timestamp=$(echo "$filename" | grep -oP '^\d{14}')
+            if [ -n "$prev_timestamp" ] && [ "$curr_timestamp" -le "$prev_timestamp" ]; then
+              echo "::error::Non-monotonic migration timestamp detected: $filename ($curr_timestamp) is not strictly after $prev_timestamp"
+              exit 1
+            fi
+            prev_timestamp="$curr_timestamp"
+          done
+          echo "Migration sequence validation passed."
+
+      - name: Pre-deployment remote migration history audit
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          set -euo pipefail
+          echo "Auditing remote migration history against local repository..."
+
+          local_versions=$(
+            ls supabase/migrations/*.sql 2>/dev/null \
+              | xargs -r -I{} basename {} \
+              | grep -oP '^\d{14}' \
+              | sort -u \
+            || true
+          )
+
+          set +e
+          raw_migration_list=$(supabase migration list --db-url "$SUPABASE_DB_URL" 2>&1)
+          list_exit=$?
+          set -e
+
+          if [ "$list_exit" -ne 0 ]; then
+            echo "::error::Failed to query remote migration history via supabase migration list."
+            echo "$raw_migration_list"
+            exit "$list_exit"
+          fi
+
+          remote_versions=$(
+            tr -d '`' <<< "$raw_migration_list" \
+              | awk -F'|' '
+                NF >= 2 {
+                  remote = $2
+                  gsub(/^[ \t]+|[ \t]+$/, "", remote)
+                  if (remote ~ /^[0-9]{14}$/) print remote
+                }
+              ' \
+              | sort -u \
+            || true
+          )
+
+          missing_locally=$(comm -13 <(echo "$local_versions") <(echo "$remote_versions") || true)
+
+          if [ -n "$missing_locally" ]; then
+            echo "::error::Mismatched History: Remote database contains applied migrations absent from local Git repository!"
+            echo "The following remote versions have no corresponding local migration file:"
+            printf '%s\n' "$missing_locally"
+            {
+              echo "### Pre-deployment History Audit Failed"
+              echo ""
+              echo "The remote database contains migrations that do not exist in \`supabase/migrations/\`:"
+              echo '```'
+              printf '%s\n' "$missing_locally"
+              echo '```'
+              echo ""
+              echo "To prevent accidental schema overwrites, deployment is blocked."
+              echo "Reconcile local repository or use \`supabase migration repair --status reverted <VERSION>\` before deploying."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          echo "Migration history audit passed: All applied remote versions exist in local repository."
 
       - name: Preview pending migrations
         env:
@@ -63,7 +145,7 @@ jobs:
     name: Apply migrations to production
     needs: preview
     if: >
-      github.ref == 'refs/heads/master' &&
+      (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/heads/test/')) &&
       (inputs.confirm == 'deploy' || (github.event_name == 'push' && vars.AUTO_DEPLOY == 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -71,7 +153,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
-          ref: master
+          ref: ${{ github.ref }}
 
       - name: Set up Supabase CLI
         uses: supabase/setup-cli@v1
@@ -130,8 +212,8 @@ jobs:
             echo "TypeScript types are already up-to-date."
           else
             git commit -m "chore(types): auto-sync database.types.ts after deployment"
-            git pull --rebase --autostash origin master
-            git push origin HEAD:master
+            git pull --rebase --autostash origin ${{ github.ref_name }}
+            git push origin HEAD:${{ github.ref_name }}
             echo "Successfully committed and pushed updated TypeScript types."
           fi
 
