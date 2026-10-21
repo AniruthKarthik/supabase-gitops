@@ -158,35 +158,12 @@ jobs:
           echo "Database restore completed in ${DURATION}s."
           echo "duration=${DURATION}" >> "$GITHUB_OUTPUT"
 
-      - name: Verify database integrity and row counts
+      - name: Verify restored database deep integrity
         id: verify
         run: |
           set -euo pipefail
-
-          TABLE_COUNT=$(docker exec pg-restore-target psql -U postgres -d postgres -At -c \
-            "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE';")
-
-          ROW_SUMMARY=$(docker exec pg-restore-target psql -U postgres -d postgres -At -c \
-            "SELECT table_name || ': ' || (xpath('/row/c/text()', query_to_xml(format('SELECT count(*) AS c FROM %I.%I', table_schema, table_name), false, true, '')))[1]::text
-             FROM information_schema.tables
-             WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
-             ORDER BY table_name;")
-
-          echo "Restored Tables Count: $TABLE_COUNT"
-          echo "Table Details:"
-          printf '%s\n' "$ROW_SUMMARY"
-
-          if [ "$TABLE_COUNT" -eq 0 ]; then
-            echo "::error::Integrity check failed: 0 tables found in restored public schema."
-            exit 1
-          fi
-
-          {
-            echo "table_count=${TABLE_COUNT}"
-            echo "row_summary<<ENDOFVAL"
-            echo "$ROW_SUMMARY"
-            echo "ENDOFVAL"
-          } >> "$GITHUB_OUTPUT"
+          chmod +x scripts/verify_restore_integrity.sh
+          ./scripts/verify_restore_integrity.sh pg-restore-target 1
 
       - name: Stop and remove isolated PostgreSQL container
         if: always()
@@ -201,14 +178,18 @@ jobs:
             echo "## Disaster Recovery & Backup Integrity Drill"
             echo ""
             if [ "${{ steps.verify.conclusion }}" = "success" ]; then
-              echo "Disaster recovery drill passed successfully. Backup is restorable, valid, and uncorrupted."
+              echo "Disaster recovery drill passed successfully. Backup is restorable, valid, and structurally verified."
               echo ""
-              echo "| Metric | Value |"
-              echo "|---|---|"
-              echo "| Source Backup Run | \`${{ steps.fetch-backup.outputs.source_run_id }}\` |"
-              echo "| Decrypted SQL Lines | ${{ steps.decrypt.outputs.line_count }} lines |"
-              echo "| Restore Duration | ${{ steps.restore.outputs.duration }}s |"
-              echo "| Public Tables Restored | ${{ steps.verify.outputs.table_count }} |"
+              echo "| Metric | Value | Status |"
+              echo "|---|---|---|"
+              echo "| Source Backup Run | \`${{ steps.fetch-backup.outputs.source_run_id }}\` | Logged |"
+              echo "| Decrypted SQL Lines | ${{ steps.decrypt.outputs.line_count }} lines | Uncorrupted |"
+              echo "| Restore Duration | ${{ steps.restore.outputs.duration }}s | Completed |"
+              echo "| Public Tables Restored | ${{ steps.verify.outputs.table_count }} | Verified |"
+              echo "| Primary Key Constraints | ${{ steps.verify.outputs.pk_count }} | Validated |"
+              echo "| Foreign Key Constraints | ${{ steps.verify.outputs.fk_count }} | Validated |"
+              echo "| Indexes Verified | ${{ steps.verify.outputs.index_count }} | Validated |"
+              echo "| Relational Read Viability | Verified (JOIN queries passed) | Verified |"
               echo ""
               echo "### Restored Tables & Row Counts"
               echo '```'
