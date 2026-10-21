@@ -12,12 +12,6 @@ on:
         required: false
         type: string
         default: ""
-      encryption_key_override:
-        description: >
-          Optional: Encryption password override if different from BACKUP_ENCRYPTION_KEY secret.
-        required: false
-        type: string
-        default: ""
 
 permissions:
   contents: read
@@ -44,14 +38,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
           BACKUP_ENCRYPTION_KEY: ${{ secrets.BACKUP_ENCRYPTION_KEY }}
-          OVERRIDE_KEY: ${{ inputs.encryption_key_override }}
           SPECIFIC_RUN_ID: ${{ inputs.backup_run_id }}
         run: |
           set -euo pipefail
 
-          PASSPHRASE="${OVERRIDE_KEY:-$BACKUP_ENCRYPTION_KEY}"
-          if [ -z "$PASSPHRASE" ]; then
-            echo "::error::No encryption passphrase available. Set BACKUP_ENCRYPTION_KEY secret or input override."
+          if [ -z "$BACKUP_ENCRYPTION_KEY" ]; then
+            echo "::error::No encryption passphrase available. Please configure the 'BACKUP_ENCRYPTION_KEY' repository secret."
             exit 1
           fi
 
@@ -78,7 +70,7 @@ jobs:
             fi
             ENCRYPTED_FILE="/tmp/restore_drill/ondemand_backup.sql.gpg"
             docker run --rm postgres:17-alpine pg_dump "$SUPABASE_DB_URL" --schema=public --clean --if-exists --quote-all-identifiers \
-              | gpg --batch --yes --symmetric --cipher-algo AES256 --passphrase "$PASSPHRASE" -o "$ENCRYPTED_FILE"
+              | gpg --batch --yes --symmetric --cipher-algo AES256 --passphrase-fd 3 -o "$ENCRYPTED_FILE" 3<<< "$BACKUP_ENCRYPTION_KEY"
           fi
 
           echo "Using encrypted backup file: $ENCRYPTED_FILE ($(ls -lh "$ENCRYPTED_FILE" | awk '{print $5}'))"
@@ -89,15 +81,13 @@ jobs:
         id: decrypt
         env:
           BACKUP_ENCRYPTION_KEY: ${{ secrets.BACKUP_ENCRYPTION_KEY }}
-          OVERRIDE_KEY: ${{ inputs.encryption_key_override }}
         run: |
           set -euo pipefail
-          PASSPHRASE="${OVERRIDE_KEY:-$BACKUP_ENCRYPTION_KEY}"
           ENCRYPTED_FILE="${{ steps.fetch-backup.outputs.encrypted_file }}"
           RESTORE_SQL="/tmp/restore_drill/restored_database.sql"
 
-          echo "Decrypting $ENCRYPTED_FILE with AES-256..."
-          gpg --batch --yes --decrypt --passphrase "$PASSPHRASE" -o "$RESTORE_SQL" "$ENCRYPTED_FILE"
+          echo "Decrypting $ENCRYPTED_FILE with AES-256 via secure descriptor..."
+          gpg --batch --yes --decrypt --passphrase-fd 3 -o "$RESTORE_SQL" "$ENCRYPTED_FILE" 3<<< "$BACKUP_ENCRYPTION_KEY"
 
           if [ ! -s "$RESTORE_SQL" ]; then
             echo "::error::Decrypted file is empty."
