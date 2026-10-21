@@ -39,9 +39,9 @@ jobs:
             exit 1
           fi
 
-          echo "Inspecting schema drift via supabase db pull dry-run..."
+          echo "Inspecting schema drift via supabase db pull --declarative..."
           set +e
-          pull_output=$(supabase db pull --db-url "$SUPABASE_DB_URL" 2>&1)
+          pull_output=$(supabase db pull --declarative --db-url "$SUPABASE_DB_URL" 2>&1)
           pull_exit=$?
           set -e
 
