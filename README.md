@@ -1,17 +1,62 @@
-# Supabase GitOps: Enterprise Database DevOps & CI/CD
+# Supabase GitOps: Production-Ready Database DevOps & CI/CD
 
-An enterprise-grade, open-source **Database-as-Code (GitOps)** and continuous database deployment platform for **Supabase PostgreSQL**.
+A production-ready **Database-as-Code (GitOps)** and continuous database deployment platform for **Supabase PostgreSQL**.
 
 Provides reliable bi-directional synchronization between GitHub and Supabase:
-- **Deploy forward**: Preview and apply version-controlled SQL migrations with automated pre-migration safety backups.
-- **Capture drift**: Pull schema changes made in the Supabase Dashboard back into Git migration files using shadow database verification.
-- **Automated backups**: Weekly encrypted application-schema backups (`public` schema and data) with AES-256 cipher, zero data leakage in Git, and 90-day retention.
-- **Disaster recovery drills**: Automated decryption and containerized restore verification to prove backup viability.
-- **Security & compliance**: Automated Row Level Security (RLS) enforcement gates on pull requests.
-- **Multi-environment promotion**: Two-stage staging to production pipeline with GitHub Environment protection.
-- **Performance & index advisor**: Linting for unindexed foreign keys and missing primary keys.
+- **Deploy forward**: Preview and apply version-controlled SQL migrations with automated pre-migration safety snapshots.
+- **Capture drift**: Pull visual changes made in the Supabase Dashboard back into Git migration files using shadow database verification.
+- **Automated backups**: AES-256 encrypted application-schema backups (`public` schema and data) with SHA-256 integrity manifests, zero data leakage in Git, and 90-day retention.
+- **Disaster recovery drills**: Automated decryption, negative failure testing, and containerized restore verification to prove backup viability.
+- **Security & compliance**: Automated Row Level Security (RLS) enforcement gates and behavioral role impersonation (`anon`, `authenticated`, `service_role`) on pull requests.
+- **Multi-environment promotion**: Two-stage staging to production pipeline with independent host validation and GitHub Environment protection.
+- **Performance & index advisor**: Automated linting for unindexed foreign keys, missing primary keys, and schema anti-patterns.
 - **Living documentation**: Auto-generated schema documentation and interactive Mermaid ER diagrams.
-- **Developer experience**: Automated TypeScript type generation and ephemeral PR database preview environments.
+- **Developer experience**: Automated TypeScript type contract synchronization and ephemeral PR database preview environments.
+
+> 📖 **Operator Runbooks & Demonstration Assets:**
+> - [Database Baselining Runbook](docs/runbook_baselining.md) — Step-by-step existing project adoption guide.
+> - [Disaster Recovery Runbook](docs/runbook_disaster_recovery.md) — Manual backup decryption and recovery drill guide.
+> - [Demonstration Gallery](docs/demo.md) — Sanitized GitHub Actions job summaries and local Docker test walkthrough.
+
+---
+
+## System Architecture
+
+```mermaid
+flowchart TD
+    subgraph DevFlow["1. Developer & PR Validation Flow"]
+        dev["Local Migration File<br/>(supabase/migrations/*.sql)"] --> pr["Pull Request"]
+        pr --> lint["lint-migrations.yml<br/>(Vanilla PostgreSQL 17 Container)"]
+        pr --> rls["rls-security-audit.yml<br/>(Behavioral Test: anon / auth / service)"]
+        pr --> advisor["db-advisor.yml<br/>(Index & FK Performance Linter)"]
+        pr --> preview["preview-database.yml<br/>(Ephemeral Preview Container / Cloud Branch)"]
+    end
+
+    subgraph DeployFlow["2. Multi-Environment Promotion & Deploy"]
+        merge["Merge to master"] --> preStaging["Pre-Staging Schema Snapshot"]
+        preStaging --> stagingDeploy["Deploy to Staging<br/>(SUPABASE_STAGING_DB_URL)"]
+        stagingDeploy --> gate{"Required Reviewers Gate<br/>(GitHub Production Environment)"}
+        gate -->|Approved| preProd["Pre-Production Backup Snapshot"]
+        preProd --> prodDeploy["Deploy to Production<br/>(SUPABASE_DB_URL)"]
+        prodDeploy --> genTypes["Sync TypeScript Types<br/>(types/database.types.ts)"]
+        prodDeploy --> genDocs["Sync Living Schema Docs<br/>(docs/schema.md)"]
+    end
+
+    subgraph DriftFlow["3. Schema Drift Reconciliation"]
+        dash["Supabase Cloud Dashboard<br/>(Visual Schema Alteration)"] --> alert["drift-alert.yml<br/>(Scheduled Weekly Audit)"]
+        alert --> capture["capture-supabase-migrations.yml<br/>(Trigger: capture)"]
+        capture --> shadow["Shadow PostgreSQL Container<br/>(Computes Consolidated DDL Diff)"]
+        shadow --> commit["New Migration File<br/>(Committed to Git Repository)"]
+    end
+
+    subgraph DRFlow["4. Disaster Recovery & Resilience"]
+        sched["Weekly Backup Schedule<br/>(backup-database.yml)"] --> dump["pg_dump Application Schema<br/>(public tables, data, sequences)"]
+        dump --> encrypt["AES-256 GPG Encryption<br/>(Streaming Unix Pipe)"]
+        encrypt --> artifact["Manifest & Encrypted Artifact<br/>(SHA-256 integrity checksum)"]
+        artifact --> drill["test-restore.yml<br/>(Monthly Automated Drill)"]
+        drill --> verify["Deep Integrity Assertions<br/>(Tables, rows, constraints, negative tests)"]
+    end
+```
 
 ---
 
@@ -55,7 +100,7 @@ By default, this repository ships with an empty `supabase/migrations/` directory
 Choose the path that matches your project:
 
 #### Path A: Adopting an Existing (Live) Supabase Project (Baselining)
-If your Supabase project already has tables, functions, or prior migrations applied, **do not run drift capture or deploy right away**. First create a clean baseline of your remote database:
+If your Supabase project already has tables, functions, or prior migrations applied, **do not run drift capture or deploy right away**. First create a clean baseline of your remote database (see the full [Database Baselining Runbook](docs/runbook_baselining.md) for detailed enterprise instructions):
 
 ```bash
 # 1. Export your remote database schema as your initial baseline migration
@@ -136,7 +181,28 @@ types/
 
 ---
 
-## Workflows Overview
+## Workflow Reference & Capabilities Matrix
+
+The matrix below provides complete technical transparency across all 12 automated workflows:
+
+| Workflow Name & File | Trigger Events | Environment Type | Database Mutations | Required Secrets & Variables | Output Artifacts | Scope & Boundaries |
+|---|---|---|---|---|---|---|
+| **Deploy Database Migrations**<br/>([`.github/workflows/deploy-migrations.yml`](.github/workflows/deploy-migrations.yml)) | `workflow_dispatch` (confirmation `deploy`), `push` to `master` (if `AUTO_DEPLOY=true`) | Live Cloud (`SUPABASE_DB_URL`) | Schema Migration (`supabase db push`) | `SUPABASE_DB_URL`, `BACKUP_ENCRYPTION_KEY` | `pre-migration-backup-<run_id>.sql` | Forward deployment with preflight monotonic timestamp audit, pre-deploy snapshot, and TypeScript type sync. |
+| **Capture Schema Drift**<br/>([`.github/workflows/capture-supabase-migrations.yml`](.github/workflows/capture-supabase-migrations.yml)) | `workflow_dispatch` (confirmation `capture`) | Live Cloud + Shadow Docker container | Read-only on DB; commits new `.sql` file to Git | `SUPABASE_DB_URL` | Consolidated migration file in `supabase/migrations/` | Reconciles dashboard changes by computing clean DDL diff against baseline in shadow container. |
+| **Encrypted Database Backups**<br/>([`.github/workflows/backup-database.yml`](.github/workflows/backup-database.yml)) | `schedule` (Sunday 02:00 UTC), `workflow_dispatch` | Live Cloud (`SUPABASE_DB_URL`) via ephemeral Docker | Read-only data dump (`pg_dump`) | `SUPABASE_DB_URL`, `BACKUP_ENCRYPTION_KEY` | `supabase_backup_<ts>.sql.gpg`, `manifest.sha256`, `manifest.json` | Application schema (`public`) and data rows. Excludes platform schemas (`auth`, `storage`, `vault`). 90-day retention. |
+| **Disaster Recovery Restore Drill**<br/>([`.github/workflows/test-restore.yml`](.github/workflows/test-restore.yml)) | `schedule` (1st of month 03:00 UTC), `workflow_dispatch` | Ephemeral `postgres:17-alpine` Docker container | Local container restoration (never touches remote DB) | `BACKUP_ENCRYPTION_KEY` | Drill report & integrity metrics in Step Summary | Proves AES-256 decryptability, SHA-256 checksum, table inventory, row count matching, relational JOIN queries, and 4 negative failure modes. |
+| **Fast PR Migration Linting**<br/>([`.github/workflows/lint-migrations.yml`](.github/workflows/lint-migrations.yml)) | `pull_request` (on `supabase/migrations/**`), `workflow_dispatch` | Ephemeral `postgres:17-alpine` Docker container | Local container only (no remote DB connection) | None (runs completely uncredentialed) | PR annotations, Step Summary report | Rapid PR feedback (<15s) checking timestamp monotonicity, syntax errors, destructive DDL, and failure rollback. |
+| **Row Level Security (RLS) Audit**<br/>([`.github/workflows/rls-security-audit.yml`](.github/workflows/rls-security-audit.yml)) | `pull_request` (on `supabase/migrations/**`), `workflow_dispatch` | Ephemeral `postgres:17-alpine` Docker container | Local container only | None | Step Summary authorization matrix | Audits RLS enablement, flags zero-policy lockouts, executes active queries as `anon` (blocked), `authenticated` (isolated), and `service_role` (bypassed). |
+| **Multi-Environment Promotion**<br/>([`.github/workflows/promote-migrations.yml`](.github/workflows/promote-migrations.yml)) | `workflow_dispatch` | Live Cloud (`staging` → `production`) | Schema Migration (`supabase db push`) | `SUPABASE_STAGING_DB_URL`, `SUPABASE_DB_URL` | Staging & Production pre-deploy SQL snapshots | Two-stage release pipeline with independent host validation, pre-deploy snapshots, and GitHub Environment approval gate. |
+| **Database Performance Advisor**<br/>([`.github/workflows/db-advisor.yml`](.github/workflows/db-advisor.yml)) | `pull_request`, `workflow_dispatch` | Ephemeral Docker container (or remote DB) | Read-only catalog inspection | `SUPABASE_DB_URL` (optional; falls back to local container) | Performance advisor summary table | Identifies unindexed foreign keys, tables missing primary keys, and runs `supabase db lint`. |
+| **Living Schema Documentation**<br/>([`.github/workflows/generate-docs.yml`](.github/workflows/generate-docs.yml)) | `push` to `master` (on `supabase/migrations/**`), `workflow_dispatch` | Ephemeral `postgres:17-alpine` Docker container | Read-only schema introspection; commits `docs/schema.md` | None | `docs/schema.md`, Mermaid ER diagram artifact | Introspects tables, columns, foreign keys, and generates Markdown documentation and interactive Mermaid ER diagram. |
+| **Automated TypeScript Types**<br/>([`.github/workflows/generate-types.yml`](.github/workflows/generate-types.yml)) | `workflow_dispatch`, `workflow_call` (from deploy) | Live Cloud (`SUPABASE_DB_URL`) | Read-only introspection; commits `types/database.types.ts` | `SUPABASE_DB_URL` | `types/database.types.ts` | Generates end-to-end TypeScript definitions directly from database schema with empty-file commit prevention. |
+| **Ephemeral PR Database Previews**<br/>([`.github/workflows/preview-database.yml`](.github/workflows/preview-database.yml)) | `pull_request`, `workflow_dispatch` | Supabase Cloud Branching or Ephemeral Docker | Disposable preview database only | `SUPABASE_ACCESS_TOKEN`, `SUPABASE_PROJECT_ID` (optional) | Step Summary preview report | Creates disposable preview database per PR, applies pending migrations, and tears down preview on merge/close. |
+| **Scheduled Drift Alerting**<br/>([`.github/workflows/drift-alert.yml`](.github/workflows/drift-alert.yml)) | `schedule` (Monday 04:00 UTC), `workflow_dispatch` | Live Cloud (`SUPABASE_DB_URL`) | Read-only dry-run (`supabase db pull`) | `SUPABASE_DB_URL` | GitHub Issue (on drift), Step Summary | Periodically checks if remote database schema has diverged from committed migration files. |
+
+---
+
+## Workflows Deep Dive
 
 ### 1. Deploy Database Migrations (`deploy-migrations.yml`)
 Pushes local migration files to the remote Supabase database:
@@ -168,6 +234,7 @@ In PostgreSQL, most DDL statements (`CREATE TABLE`, `ALTER TABLE ... ADD COLUMN`
    supabase migration repair --status reverted <FAILED_VERSION_ID> --db-url "$SUPABASE_DB_URL"
    ```
 4. Correct the migration SQL in your local branch, test locally with `supabase start`, and re-deploy.
+5. For comprehensive manual recovery, AES-256 decryption, and post-restore integrity assertions, refer to the [Disaster Recovery Runbook](docs/runbook_disaster_recovery.md).
 
 ---
 
@@ -243,7 +310,9 @@ For enterprise-grade disaster recovery, stream the encrypted output directly fro
 ### 4. Disaster Recovery Restore Drill (`test-restore.yml`)
 Proves backup integrity and disaster recovery readiness:
 - **Trigger**: Monthly automated schedule (1st of every month at 03:00 UTC) or manual on-demand trigger.
-- **Automated Verification**: Downloads the latest encrypted backup, decrypts with AES-256, restores into an isolated `postgres:17-alpine` container, and validates table counts and row integrity.
+- **Automated Verification**: Downloads the latest encrypted backup, decrypts with AES-256, restores into an isolated `postgres:17-alpine` container, and validates table counts, row counts, foreign key constraints, indexes, and relational JOIN viabilities.
+- **Negative Testing**: Runs 4 automated negative recovery scenarios (wrong passphrase, corrupt bytes, empty file, DDL error trap).
+- **Runbook**: See the operational [Disaster Recovery Runbook](docs/runbook_disaster_recovery.md) for manual restore instructions.
 
 ---
 
@@ -263,6 +332,19 @@ Runs automatically on every Pull Request modifying `supabase/migrations/**`:
 | **Cloud Database Branch** | Supabase Cloud Database Branch | 100% Production Parity | Full Supabase platform (GoTrue auth, PostgREST API, Storage, Edge Functions, Cloud Dashboard). | `preview-database.yml` (Cloud mode) |
 | **Disaster Recovery Drill** | Ephemeral `postgres:17-alpine` Docker | Decrypted Application Data | Proves backup decryptability, table inventory, row restoration, index health, and relational queries. | `test-restore.yml`, `scripts/verify_restore_integrity.sh` |
 | **Behavioral RLS Audit** | Isolated PostgreSQL / Supabase Container | Active Runtime Security | Impersonates `anon`, `authenticated`, and `service_role` to verify positive access and cross-tenant isolation. | `rls-security-audit.yml`, `scripts/audit_rls_behavior.sql` |
+
+#### Guarantees & Known Limitations
+
+To provide technical transparency for senior engineering and architecture reviews, the table below delineates verified guarantees from platform prerequisites:
+
+| Dimension | Automated Guarantee in Repository | Platform Boundary / Prerequisite |
+|---|---|---|
+| **SQL Migration Syntax** | Monotonic timestamps, syntax correctness, and destructive DDL detection verified in CI via ephemeral Docker container (<15s). | Does not execute migrations against live Supabase cloud branches unless configured with Management API tokens. |
+| **RLS Authorization** | Active behavioral tests impersonating `anon`, `authenticated`, and `service_role` prove unauthorized reads/writes are blocked and cross-tenant data is isolated. | Requires application policies to use standard PostgreSQL / Supabase role conventions (`auth.uid()`). |
+| **Application Backups** | AES-256 encrypted dump of `public` tables, views, sequences, triggers, and rows with SHA-256 checksums and 90-day retention. | Deliberately excludes platform schemas (`auth`, `storage`, `vault`, `realtime`). Auth users and storage buckets must be exported via Supabase Management API and object store replication. |
+| **Disaster Recovery** | Automated monthly drill proves decryptability, SHA-256 integrity, table inventory, row count restoration, relational JOIN queries, and 4 negative failure modes. | Executes in ephemeral container to prevent accidentally overwriting live production or staging databases. |
+| **Database Branching** | Ephemeral PR database container spins up on demand for zero-cost CI testing. | Full Supabase cloud database branching requires a paid Supabase plan, `SUPABASE_ACCESS_TOKEN`, and `SUPABASE_PROJECT_ID`. |
+| **Multi-Environment Promotion** | Strictly enforces that staging and production use distinct database hosts before applying migrations. | Requires manual creation of `staging` and `production` environments in GitHub Repository Settings. |
 
 ---
 
@@ -312,6 +394,25 @@ Disposable preview databases for feature testing on Pull Requests:
 Continuous compliance monitoring:
 - Runs weekly on Monday at 04:00 UTC to detect uncaptured dashboard changes.
 - Alerts the team in GitHub Actions if production schema drifts from repository code.
+
+---
+
+## Demonstration & Verification Gallery
+
+For platform engineers, hiring managers, and technical interviewers evaluating this repository:
+- **[Demonstration Gallery](docs/demo.md)**: Real, verified Markdown reports and execution evidence from green GitHub Actions pipeline runs:
+  - Disaster recovery drill assertions (table inventory, primary/foreign keys, indexes, relational JOIN queries).
+  - Row Level Security (RLS) active behavioral audit (`anon` rejection, `authenticated` tenant isolation, `service_role` bypass).
+  - Pre-deployment history baselining and destructive DDL scanner annotations.
+  - Database performance advisor reports and schema linting.
+- **5-Minute Local Evaluation (Docker required)**:
+  ```bash
+  # Execute full migration lifecycle suite locally (clean init, apply, seed, rollback)
+  ./scripts/test_local_migrations.sh
+
+  # Execute automated negative backup and recovery tests
+  ./scripts/test_backup_negative.sh
+  ```
 
 ---
 
