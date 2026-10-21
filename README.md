@@ -31,7 +31,7 @@ Go to your repo: **Settings > Secrets and variables > Actions > New repository s
 | Secret | Description | Example / Format |
 |---|---|---|
 | `SUPABASE_DB_URL` | *(Required)* Direct PostgreSQL connection string | `postgresql://postgres.<ref>:<password>@<host>:5432/postgres` |
-| `BACKUP_ENCRYPTION_KEY` | *(Required)* Master password for encrypted backups | `MyStrongPassword2026!#` |
+| `BACKUP_ENCRYPTION_KEY` | *(Required)* Master password for encrypted backups | `<strong-backup-passphrase>` |
 | `SUPABASE_STAGING_DB_URL` | *(Optional)* Staging database connection string | `postgresql://postgres.<ref>:<password>@<host>:5432/postgres` |
 | `WEBHOOK_URL` | *(Optional)* Discord or Slack webhook for notifications | `https://discord.com/api/webhooks/...` |
 | `SUPABASE_ACCESS_TOKEN` | *(Optional)* Supabase Management API token for cloud branching | `sbp_...` |
