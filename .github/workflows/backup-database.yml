@@ -54,7 +54,9 @@ jobs:
 
           TIMESTAMP=$(date -u +'%Y%m%d_%H%M%S')
           FILE_NAME="supabase_backup_${TIMESTAMP}.sql.gpg"
-          OUTPUT_PATH="/tmp/${FILE_NAME}"
+          BUNDLE_DIR="/tmp/backup_bundle_${TIMESTAMP}"
+          mkdir -p "$BUNDLE_DIR"
+          OUTPUT_PATH="${BUNDLE_DIR}/${FILE_NAME}"
 
           echo "Running pg_dump via postgres:17 Docker container and streaming into GPG AES-256 via secure descriptor..."
           docker run --rm \
@@ -69,23 +71,43 @@ jobs:
           FILE_SIZE=$(ls -lh "$OUTPUT_PATH" | awk '{print $5}')
           echo "Backup created: $OUTPUT_PATH ($FILE_SIZE)"
 
+          # Generate tamper-evident SHA-256 checksum and audit manifest
+          cd "$BUNDLE_DIR"
+          SHA256_HASH=$(sha256sum "$FILE_NAME" | awk '{print $1}')
+          sha256sum "$FILE_NAME" > "${FILE_NAME}.sha256"
+
+          cat << EOF > manifest.json
+          {
+            "timestamp": "${TIMESTAMP}",
+            "file_name": "${FILE_NAME}",
+            "sha256": "${SHA256_HASH}",
+            "file_size": "${FILE_SIZE}",
+            "commit_sha": "${{ github.sha }}",
+            "cipher": "AES-256",
+            "scope": "public"
+          }
+          EOF
+
+          echo "Computed SHA-256: $SHA256_HASH"
           echo "file_name=${FILE_NAME}" >> "$GITHUB_OUTPUT"
           echo "file_path=${OUTPUT_PATH}" >> "$GITHUB_OUTPUT"
+          echo "bundle_path=${BUNDLE_DIR}" >> "$GITHUB_OUTPUT"
           echo "file_size=${FILE_SIZE}" >> "$GITHUB_OUTPUT"
           echo "timestamp=${TIMESTAMP}" >> "$GITHUB_OUTPUT"
+          echo "sha256=${SHA256_HASH}" >> "$GITHUB_OUTPUT"
 
-      - name: Upload encrypted backup artifact
+      - name: Upload encrypted backup artifact bundle
         uses: actions/upload-artifact@v4
         with:
           name: encrypted-database-backup-${{ steps.backup.outputs.timestamp }}
-          path: ${{ steps.backup.outputs.file_path }}
+          path: ${{ steps.backup.outputs.bundle_path }}
           retention-days: 90
 
       - name: Write job summary
         if: always()
         run: |
           {
-            echo "## Database Backup"
+            echo "## Database Backup (Application Schema: \`public\`)"
             echo ""
             if [ "${{ steps.backup.conclusion }}" = "success" ]; then
               echo "Encrypted database backup created successfully."
@@ -96,14 +118,17 @@ jobs:
               echo "| Scope | Application schema (\`public\` tables, sequences, triggers, data) |"
               echo "| Excluded | Platform schemas (\`auth\`, \`storage\`, \`vault\`, system catalogs) |"
               echo "| Encryption | AES-256 (GPG symmetric) |"
+              echo "| SHA-256 Checksum | \`${{ steps.backup.outputs.sha256 }}\` |"
+              echo "| Commit SHA | \`${{ github.sha }}\` |"
               echo "| Timestamp | ${{ steps.backup.outputs.timestamp }} UTC |"
               echo "| Artifact | \`encrypted-database-backup-${{ steps.backup.outputs.timestamp }}\` |"
               echo "| File | \`${{ steps.backup.outputs.file_name }}\` |"
               echo "| Size | ${{ steps.backup.outputs.file_size }} |"
-              echo "| Retention | 90 days |"
+              echo "| Retention | 90 days (GitHub Actions Artifact limit) |"
               echo ""
               echo "### How to restore"
               echo '```bash'
+              echo "sha256sum -c ${{ steps.backup.outputs.file_name }}.sha256"
               echo "gpg --decrypt ${{ steps.backup.outputs.file_name }} > rebuild.sql"
               echo "psql \"<TARGET_DATABASE_URL>\" < rebuild.sql"
               echo '```'

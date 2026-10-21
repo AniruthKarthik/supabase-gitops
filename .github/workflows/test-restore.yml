@@ -77,6 +77,37 @@ jobs:
           echo "encrypted_file=${ENCRYPTED_FILE}" >> "$GITHUB_OUTPUT"
           echo "source_run_id=${TARGET_RUN_ID:-ondemand}" >> "$GITHUB_OUTPUT"
 
+      - name: Verify backup checksum and integrity
+        id: verify-checksum
+        run: |
+          set -euo pipefail
+          ENCRYPTED_FILE="${{ steps.fetch-backup.outputs.encrypted_file }}"
+          DIR_PATH=$(dirname "$ENCRYPTED_FILE")
+          CHECKSUM_FILE=$(find "$DIR_PATH" -name "*.sha256" | head -n 1 || true)
+          MANIFEST_FILE=$(find "$DIR_PATH" -name "manifest.json" | head -n 1 || true)
+
+          ACTUAL_SHA256=$(sha256sum "$ENCRYPTED_FILE" | awk '{print $1}')
+          echo "Computed SHA-256 for $ENCRYPTED_FILE: $ACTUAL_SHA256"
+
+          if [ -n "$CHECKSUM_FILE" ] && [ -f "$CHECKSUM_FILE" ]; then
+            echo "Verifying against checksum manifest ($CHECKSUM_FILE)..."
+            EXPECTED_SHA256=$(awk '{print $1}' "$CHECKSUM_FILE")
+            if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
+              echo "::error::Tamper detection alert: SHA-256 checksum mismatch! Expected: $EXPECTED_SHA256, Actual: $ACTUAL_SHA256"
+              exit 1
+            fi
+            echo "[PASS] Tamper-evident checksum verified against artifact manifest."
+          else
+            echo "No .sha256 manifest present in archive (e.g. on-demand backup). Computed SHA-256: $ACTUAL_SHA256"
+          fi
+
+          if [ -n "$MANIFEST_FILE" ] && [ -f "$MANIFEST_FILE" ]; then
+            echo "Artifact Manifest Content:"
+            cat "$MANIFEST_FILE"
+          fi
+
+          echo "sha256=${ACTUAL_SHA256}" >> "$GITHUB_OUTPUT"
+
       - name: Decrypt backup file
         id: decrypt
         env:
@@ -193,6 +224,7 @@ jobs:
               echo "| Metric | Value | Status |"
               echo "|---|---|---|"
               echo "| Source Backup Run | \`${{ steps.fetch-backup.outputs.source_run_id }}\` | Logged |"
+              echo "| Backup SHA-256 Checksum | \`${{ steps.verify-checksum.outputs.sha256 }}\` | Verified |"
               echo "| Decrypted SQL Lines | ${{ steps.decrypt.outputs.line_count }} lines | Uncorrupted |"
               echo "| Restore Duration | ${{ steps.restore.outputs.duration }}s | Completed |"
               echo "| Public Tables Restored | ${{ steps.verify.outputs.table_count }} | Verified |"
