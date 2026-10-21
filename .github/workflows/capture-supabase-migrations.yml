@@ -39,6 +39,7 @@ jobs:
 
       - name: Verify Docker daemon
         run: |
+          set -euo pipefail
           docker version --format 'Docker {{.Server.Version}}' \
             || { echo "::error::Docker daemon is not available on this runner."; exit 1; }
 
@@ -126,6 +127,7 @@ jobs:
           steps.preflight.outputs.case == 'C' ||
           steps.preflight.outputs.case == 'UNPUSHED'
         run: |
+          set -euo pipefail
           CASE="${{ steps.preflight.outputs.case }}"
 
           if [ "$CASE" = "UNPUSHED" ]; then
@@ -218,6 +220,7 @@ jobs:
           steps.preflight.outputs.case == 'A_or_B' &&
           steps.check-history-sql.outputs.case == 'B'
         run: |
+          set -euo pipefail
           echo "::error::Case B -- Remote history contains version(s) whose original SQL"
           echo "is not stored in the migration history table and cannot be reconstructed."
           echo ""
@@ -403,6 +406,7 @@ jobs:
       - name: Write job summary
         if: always()
         run: |
+          set -euo pipefail
           CASE="${{ steps.preflight.outputs.case }}"
           {
             echo "## Capture database migrations"

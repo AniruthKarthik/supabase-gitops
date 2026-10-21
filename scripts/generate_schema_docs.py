@@ -20,6 +20,9 @@ def build_schema_documentation(target, is_docker=True):
     q_tables = "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY table_name;"
     table_rows = run_query(target, q_tables, is_docker)
     tables = [r[0] for r in table_rows if r and r[0]]
+    if not tables:
+        print("Error: Schema introspection found zero public tables. Database is uninitialized or introspection failed.", file=sys.stderr)
+        sys.exit(1)
 
     q_cols = """
     SELECT table_name, column_name, data_type, is_nullable, COALESCE(column_default, '')

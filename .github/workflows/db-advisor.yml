@@ -143,12 +143,19 @@ jobs:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
           set -euo pipefail
-          LINT_OUTPUT="No remote database URL provided for CLI lint."
-          if [ -n "$SUPABASE_DB_URL" ]; then
-            echo "Running supabase db lint on remote database..."
-            LINT_OUTPUT=$(supabase db lint --db-url "$SUPABASE_DB_URL" --schema public --level warning 2>&1 || true)
-          fi
+          TARGET_URL="${SUPABASE_DB_URL:-postgresql://postgres:postgres@127.0.0.1:5435/postgres}"
+          echo "Running supabase db lint on target database ($([ -n "${SUPABASE_DB_URL:-}" ] && echo "remote secret" || echo "local test container"))..."
+          
+          LINT_EXIT=0
+          LINT_OUTPUT=$(supabase db lint --db-url "$TARGET_URL" --schema public --level warning 2>&1) || LINT_EXIT=$?
           echo "$LINT_OUTPUT"
+
+          if [ "$LINT_EXIT" -ne 0 ] || echo "$LINT_OUTPUT" | grep -qi "ERROR"; then
+            echo "::error::Supabase db lint identified schema errors in public schema."
+          elif echo "$LINT_OUTPUT" | grep -qi "WARN"; then
+            echo "::warning::Supabase db lint identified schema warnings."
+          fi
+
           {
             echo "lint_output<<ENDOFVAL"
             echo "$LINT_OUTPUT"
@@ -158,12 +165,14 @@ jobs:
       - name: Stop and remove test container
         if: always()
         run: |
+          set -euo pipefail
           docker stop pg-advisor-target >/dev/null 2>&1 || true
           docker rm pg-advisor-target >/dev/null 2>&1 || true
 
       - name: Publish performance advisor report
         if: always()
         run: |
+          set -euo pipefail
           {
             echo "## Database Performance & Index Advisor Report"
             echo ""

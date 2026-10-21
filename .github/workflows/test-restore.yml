@@ -206,6 +206,7 @@ jobs:
       - name: Stop and remove isolated PostgreSQL container and purge plaintext artifacts
         if: always()
         run: |
+          set -euo pipefail
           docker stop pg-restore-target >/dev/null 2>&1 || true
           docker rm pg-restore-target >/dev/null 2>&1 || true
           # Secure cleanup: destroy all decrypted plaintext files and artifacts
@@ -215,6 +216,7 @@ jobs:
       - name: Write drill report to Job Summary
         if: always()
         run: |
+          set -euo pipefail
           {
             echo "## Disaster Recovery & Backup Integrity Drill"
             echo ""
@@ -248,7 +250,8 @@ jobs:
         env:
           WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
         run: |
-          if [ -n "$WEBHOOK_URL" ]; then
+          set -euo pipefail
+          if [ -n "${WEBHOOK_URL:-}" ]; then
             STATUS="${{ job.status }}"
             curl -s -X POST -H "Content-Type: application/json" \
               -d "{\"text\": \"Disaster Recovery Drill: ${STATUS} on ${{ github.repository }} (Run ${{ github.run_id }})\"}" \

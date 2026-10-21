@@ -33,8 +33,22 @@ jobs:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
           set -euo pipefail
+          if [ -z "${SUPABASE_DB_URL:-}" ]; then
+            echo "::error::SUPABASE_DB_URL secret is not configured or empty."
+            exit 1
+          fi
+
           mkdir -p types
-          supabase gen types --lang=typescript --db-url "$SUPABASE_DB_URL" --schema public > types/database.types.ts
+          echo "Generating TypeScript types from database schema..."
+          supabase gen types --lang=typescript --db-url "$SUPABASE_DB_URL" --schema public > types/database.types.ts.tmp
+
+          if [ ! -s types/database.types.ts.tmp ]; then
+            echo "::error::Generated types/database.types.ts is empty. Verify remote database connection and permissions."
+            rm -f types/database.types.ts.tmp
+            exit 1
+          fi
+
+          mv types/database.types.ts.tmp types/database.types.ts
           echo "Generated types/database.types.ts ($(wc -l < types/database.types.ts) lines)"
 
       - name: Upload TypeScript types artifact

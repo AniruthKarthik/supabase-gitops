@@ -104,6 +104,7 @@ jobs:
 
       - name: Publish staging summary
         run: |
+          set -euo pipefail
           {
             echo "### Staging Deployment Passed"
             echo ""
@@ -183,6 +184,7 @@ jobs:
       - name: Publish pipeline summary
         if: always()
         run: |
+          set -euo pipefail
           {
             echo "## Multi-Environment Promotion Pipeline Summary"
             echo ""
@@ -202,7 +204,8 @@ jobs:
         env:
           WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
         run: |
-          if [ -n "$WEBHOOK_URL" ]; then
+          set -euo pipefail
+          if [ -n "${WEBHOOK_URL:-}" ]; then
             STATUS="${{ job.status }}"
             curl -s -X POST -H "Content-Type: application/json" \
               -d "{\"text\": \"Promotion Pipeline: ${STATUS} on ${{ github.repository }} (Run ${{ github.run_id }})\"}" \

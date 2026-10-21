@@ -164,6 +164,7 @@ jobs:
       - name: Publish preview summary
         if: always()
         run: |
+          set -euo pipefail
           {
             echo "## Ephemeral Database Preview Status"
             echo ""
