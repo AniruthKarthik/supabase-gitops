@@ -15,6 +15,20 @@ on:
         required: false
         type: string
         default: ""
+      repair_action:
+        description: 'Optional: Repair migration history table before pre-flight audit'
+        required: false
+        type: choice
+        default: 'none'
+        options:
+          - 'none'
+          - 'reverted'
+          - 'applied'
+      repair_versions:
+        description: 'Space-separated migration versions to repair (e.g. "20261019000000 20261019120000")'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: write
@@ -60,6 +74,20 @@ jobs:
             prev_timestamp="$curr_timestamp"
           done
           echo "Migration sequence validation passed."
+
+      - name: Repair remote migration history (if requested)
+        if: inputs.repair_action != 'none' && inputs.repair_versions != ''
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          set -euo pipefail
+          echo "Executing migration repair against remote database..."
+          echo "Status: ${{ inputs.repair_action }}"
+          echo "Versions: ${{ inputs.repair_versions }}"
+          for version in ${{ inputs.repair_versions }}; do
+            supabase migration repair --db-url "$SUPABASE_DB_URL" --status "${{ inputs.repair_action }}" "$version"
+          done
+          echo "Remote migration history successfully repaired."
 
       - name: Pre-deployment remote migration history audit
         env:
