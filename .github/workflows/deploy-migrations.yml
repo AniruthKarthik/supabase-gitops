@@ -31,12 +31,12 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ github.ref }}
 
       - name: Set up Supabase CLI
-        uses: supabase/setup-cli@v1
+        uses: supabase/setup-cli@b60b5899c73b63a2d2d651b1e90db8d4c9392f51 # v1.6.0
         with:
           version: 2.121.0
 
@@ -151,12 +151,12 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ github.ref }}
 
       - name: Set up Supabase CLI
-        uses: supabase/setup-cli@v1
+        uses: supabase/setup-cli@b60b5899c73b63a2d2d651b1e90db8d4c9392f51 # v1.6.0
         with:
           version: 2.121.0
 
@@ -177,7 +177,7 @@ jobs:
           echo "Schema backup verified: /tmp/backup_schema.sql ($LINE_COUNT lines)"
 
       - name: Upload pre-migration schema backup
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
         with:
           name: pre-migration-backup-${{ github.run_id }}
           path: /tmp/backup_schema.sql
@@ -227,6 +227,9 @@ jobs:
 
       - name: Write job summary
         if: always()
+        env:
+          TRIGGER_ACTOR: ${{ github.actor }}
+          TRIGGER_EVENT: ${{ github.event_name }}
         run: |
           set -euo pipefail
           {
@@ -234,8 +237,8 @@ jobs:
             echo ""
             echo "| Field | Value |"
             echo "|---|---|"
-            echo "| Triggered by | ${{ github.actor }} |"
-            echo "| Trigger Event | ${{ github.event_name }} |"
+            echo "| Triggered by | ${TRIGGER_ACTOR} |"
+            echo "| Trigger Event | ${TRIGGER_EVENT} |"
             echo "| Commit | \`${{ github.sha }}\` |"
             echo "| Run | [${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |"
             echo "| Backup artifact | pre-migration-backup-${{ github.run_id }} |"

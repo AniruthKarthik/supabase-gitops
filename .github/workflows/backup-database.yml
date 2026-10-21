@@ -21,7 +21,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Verify tools
         run: |
@@ -97,7 +97,7 @@ jobs:
           echo "sha256=${SHA256_HASH}" >> "$GITHUB_OUTPUT"
 
       - name: Upload encrypted backup artifact bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
         with:
           name: encrypted-database-backup-${{ steps.backup.outputs.timestamp }}
           path: ${{ steps.backup.outputs.bundle_path }}
