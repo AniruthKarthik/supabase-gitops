@@ -1,13 +1,13 @@
-# Supabase GitOps: Production-Ready Database DevOps & CI/CD
+# Supabase GitOps
 
-A production-ready **Database-as-Code (GitOps)** and continuous database deployment platform for **Supabase PostgreSQL**.
+A **Database-as-Code (GitOps)** and continuous database deployment setup for **Supabase PostgreSQL**.
 
 Provides reliable bi-directional synchronization between GitHub and Supabase:
 - **Deploy forward**: Preview and apply version-controlled SQL migrations with automated pre-migration safety snapshots.
 - **Capture drift**: Pull visual changes made in the Supabase Dashboard back into Git migration files using shadow database verification.
 - **Automated backups**: AES-256 encrypted application-schema backups (`public` schema and data) with SHA-256 integrity manifests, zero data leakage in Git, and 90-day retention.
 - **Disaster recovery drills**: Automated decryption, negative failure testing, and containerized restore verification to prove backup viability.
-- **Security & compliance**: Automated Row Level Security (RLS) enforcement gates and behavioral role impersonation (`anon`, `authenticated`, `service_role`) on pull requests.
+- **Security**: Automated Row Level Security (RLS) enforcement gates and behavioral role impersonation (`anon`, `authenticated`, `service_role`) on pull requests.
 - **Multi-environment promotion**: Two-stage staging to production pipeline with independent host validation and GitHub Environment protection.
 - **Performance & index advisor**: Automated linting for unindexed foreign keys, missing primary keys, and schema anti-patterns.
 - **Living documentation**: Auto-generated schema documentation and interactive Mermaid ER diagrams.
@@ -17,6 +17,89 @@ Provides reliable bi-directional synchronization between GitHub and Supabase:
 > - [Database Baselining Runbook](docs/runbook_baselining.md) — Step-by-step existing project adoption guide.
 > - [Disaster Recovery Runbook](docs/runbook_disaster_recovery.md) — Manual backup decryption and recovery drill guide.
 > - [Demonstration Gallery](docs/demo.md) — Sanitized GitHub Actions job summaries and local Docker test walkthrough.
+
+---
+
+> [!CAUTION]
+> ### KEEP THIS REPOSITORY PRIVATE (Do Not Fork Publicly)
+> 1. **Encrypted Artifact Exposure**: Database backups created by `backup-database.yml` are stored as GitHub Actions artifacts. While AES-256 encrypted, **artifacts on public repositories can be downloaded by any logged-in GitHub user**.
+> 2. **Schema Disclosure in Issues**: The schema drift detection workflow (`drift-alert.yml`) automatically opens GitHub Issues when database changes are detected, which **can leak your database schema, table structures, and migration history publicly**.
+>
+> Always click **"Use this template"** above and set repository visibility to **Private**.
+
+> [!WARNING]
+> ### RUN AGAINST A THROWAWAY OR STAGING PROJECT FIRST
+> These workflows execute live database commands, including `supabase db push`. Never connect this template directly to a mission-critical production database without first verifying your migrations and deployment pipeline against a throwaway or staging Supabase project.
+
+---
+
+## Who This Is For / Not For
+
+- **Who this is for**:
+  - Small teams and solo devs on Supabase hosted Postgres who want version-controlled migrations in Git, automated drift detection, and verified backups.
+  - Projects needing alerts when changes are made directly via the Supabase Dashboard.
+  - Developers wanting automated, encrypted backups with monthly containerized restore drills.
+- **Who this is not for**:
+  - Teams needing out-of-the-box backup for Supabase Auth users (`auth` schema) or Storage files (`storage` schema).
+  - Teams requiring multi-year immutable retention (e.g. WORM compliance locks) without custom external object store integration.
+  - Non-Supabase vanilla PostgreSQL deployments that cannot adapt Supabase CLI migrations.
+
+---
+
+## Limitations: Backup & Recovery Scope
+
+> [!IMPORTANT]
+> **`public` Schema Only — Do Not Assume Auth or Storage Are Backed Up**
+> Standard Supabase connection roles (`postgres` or connection poolers) do not possess superuser privileges to dump platform-owned schemas without triggering permission violations. Backups are strictly scoped to `--schema=public`. If you assume auth users are backed up here, **you will lose user accounts and file metadata during a disaster recovery event**.
+
+| Boundary Dimension | Scope & Behavior | Rationale / Prerequisite |
+|---|---|---|
+| **Included in Backup** | `public` schema tables, data rows, sequences, foreign keys, triggers, and custom functions | Captures all core business domain data and application state without triggering privilege errors. |
+| **Excluded: `auth` Schema** | GoTrue identities, encrypted passwords, sessions, refresh tokens, MFA credentials | Managed by Supabase GoTrue; requires superuser/bypassrls to dump directly. Must be exported via Supabase Management API (`/v1/projects/{ref}/users`) or admin scripts. |
+| **Excluded: `storage` Schema** | Storage bucket metadata and object tables (`storage.buckets`, `storage.objects`) | Underlying binary assets reside in S3-compatible object storage. Object storage must be replicated separately (e.g. via AWS CLI or rclone). |
+| **Excluded: `vault` Schema** | Encrypted secrets and KMS keys managed by `pgsodium` | Decryption keys reside in Supabase Key Management System. Master secrets must be stored in external secret managers (e.g. GitHub Secrets). |
+| **Excluded: Platform Schemas** | `graphql`, `realtime`, `pg_catalog`, `information_schema`, `supabase_functions` | Ephemeral or managed system schemas recreated automatically by the Supabase platform runtime. |
+
+> **Why `public` schema only?**
+> On hosted Supabase instances (and AWS RDS / PostgreSQL-as-a-Service generally), connection strings connect via standard project roles (e.g., `postgres` or connection poolers). These roles lack superuser privileges to dump platform-owned schemas without throwing permission violations. Restricting the automated snapshot to `--schema=public` ensures reliable, clean backups without permission failures.
+
+---
+
+## 30-Second Quickstart
+
+Get automated backups and GitOps running in under a minute:
+
+1. **Use this template (Private)**: Click **"Use this template"** > **"Create a new repository"** and set repository visibility to **Private**.
+2. **Add minimum secrets**: Go to **Settings > Secrets and variables > Actions > New repository secret** and add:
+   - `SUPABASE_DB_URL`: Direct PostgreSQL connection string (port 5432).
+   - `BACKUP_ENCRYPTION_KEY`: A strong passphrase used by GPG for AES-256 symmetric encryption.
+3. **Run “Backup database” manually**: Go to **Actions > Encrypted Database Backups > Run workflow**.
+4. **Everything else is optional**: Staging secrets, branch previews, and automated schedules can be enabled whenever you need them.
+
+### Minimum Secrets Breakdown
+
+Only **two secrets** are needed to start:
+
+| Secret | When Needed | Description | Format / Example |
+|---|---|---|---|
+| `SUPABASE_DB_URL` | **Required to start** | Direct PostgreSQL connection string (production) | `postgresql://postgres.<ref>:<password>@<host>:5432/postgres` |
+| `BACKUP_ENCRYPTION_KEY` | **Required to start** | Master password for AES-256 encrypted backups | `<strong-backup-passphrase>` |
+| `SUPABASE_STAGING_DB_URL` | *Only for Promotion* | Independent staging database connection string | `postgresql://postgres.<ref>:<password>@<host>:5432/postgres` |
+| `WEBHOOK_URL` | *Optional* | Discord or Slack webhook for notifications | `https://discord.com/api/webhooks/...` |
+| `SUPABASE_ACCESS_TOKEN` | *Optional* | Supabase Management API token for cloud branching | `sbp_...` |
+| `SUPABASE_PROJECT_ID` | *Optional* | Supabase project reference ID for cloud branching | `abcdefghijklmnopqrst` |
+
+> **Note on `SUPABASE_DB_URL`**: Use the **Direct Connection** or **Session Mode Pooler** string from your Supabase Dashboard (**Project Settings > Database > Connection string**). Do not use the transaction pooler on port 6543.
+
+---
+
+## Default Branch: Note on `master` vs `main`
+
+> [!NOTE]
+> This repository uses **`master`** as its default branch. GitHub defaults newly created repositories to `main`.
+> - If your copied repository keeps `master` as default, workflows work immediately with zero configuration.
+> - If your repository uses `main`, update branch references in `.github/workflows/` (`deploy-migrations.yml`, `capture-supabase-migrations.yml`, and `generate-docs.yml`) from `master` to `main`, or rename your default branch to `master` under **Settings > Branches**.
+> Support for configurable default branch names across all workflows is tracked on our [Roadmap](#roadmap).
 
 ---
 
@@ -60,29 +143,23 @@ flowchart TD
 
 ---
 
-## Quickstart
+## Detailed Setup Guide
 
-### Step 1: Fork and Clone
-Fork this repository to your GitHub account and clone your fork locally (replace `<your-username>` with your GitHub username):
+### Step 1: Use This Template (Private)
+Click **"Use this template"** > **"Create a new repository"** at the top of this repository (or clone your copy locally).
+
+> **Why a template instead of a fork?**
+> Creating a repository from a template gives you a clean git history with zero fork-network noise and makes it easy to maintain your repository as **Private**, protecting backup artifacts and drift alerts.
 
 ```bash
-git clone https://github.com/<your-username>/supabase-gitops.git
-cd supabase-gitops
+git clone https://github.com/<your-username>/<your-repo-name>.git
+cd <your-repo-name>
 ```
 
 ### Step 2: Configure GitHub Secrets
-Go to your repo: **Settings > Secrets and variables > Actions > New repository secret** and add:
+Navigate to **Settings > Secrets and variables > Actions > New repository secret**.
 
-| Secret | Description | Example / Format |
-|---|---|---|
-| `SUPABASE_DB_URL` | *(Required)* Direct PostgreSQL connection string for production | `postgresql://postgres.<ref>:<password>@<host>:5432/postgres` |
-| `BACKUP_ENCRYPTION_KEY` | *(Required)* Master password for encrypted backups | `<strong-backup-passphrase>` |
-| `SUPABASE_STAGING_DB_URL` | *(Required for Promotion)* Independent Staging database connection string | `postgresql://postgres.<ref>:<password>@<host>:5432/postgres` |
-| `WEBHOOK_URL` | *(Optional)* Discord or Slack webhook for notifications | `https://discord.com/api/webhooks/...` |
-| `SUPABASE_ACCESS_TOKEN` | *(Optional)* Supabase Management API token for cloud branching | `sbp_...` |
-| `SUPABASE_PROJECT_ID` | *(Optional)* Supabase project reference ID for cloud branching | `abcdefghijklmnopqrst` |
-
-> **Note on `SUPABASE_DB_URL`**: Use the **Direct Connection** or **Session Mode Pooler** string from your Supabase Dashboard (**Project Settings > Database > Connection string**). Do not use the transaction pooler on port 6543.
+As outlined in the [Minimum Secrets Breakdown](#minimum-secrets-breakdown), only `SUPABASE_DB_URL` and `BACKUP_ENCRYPTION_KEY` are needed to start. Add `SUPABASE_STAGING_DB_URL` if using the staging promotion pipeline.
 
 ### Step 3: Configure GitHub Environments & Protection Rules
 To enforce safe multi-environment promotion from `staging` to `production`:
@@ -100,7 +177,7 @@ By default, this repository ships with an empty `supabase/migrations/` directory
 Choose the path that matches your project:
 
 #### Path A: Adopting an Existing (Live) Supabase Project (Baselining)
-If your Supabase project already has tables, functions, or prior migrations applied, **do not run drift capture or deploy right away**. First create a clean baseline of your remote database (see the full [Database Baselining Runbook](docs/runbook_baselining.md) for detailed enterprise instructions):
+If your Supabase project already has tables, functions, or prior migrations applied, **do not run drift capture or deploy right away**. First create a clean baseline of your remote database (see the full [Database Baselining Runbook](docs/runbook_baselining.md) for detailed instructions):
 
 ```bash
 # 1. Export your remote database schema as your initial baseline migration
@@ -151,39 +228,79 @@ To activate automated recurring runs, navigate to **Settings > Secrets and varia
 
 ---
 
+## Frequently Asked Questions (FAQ)
+
+### Why do my scheduled runs show "skipped"?
+By default, **all automated schedules are turned off** until repository variables are explicitly created.
+
+GitHub Actions evaluates cron schedules defined in workflow files automatically. When a scheduled trigger executes, the workflow checks whether its activation variable (such as `ENABLE_SCHEDULED_BACKUPS` or `ENABLE_ALL_SCHEDULES`) is set to `true`. Because variables are unset by default, the workflow logs that schedules are disabled and skips subsequent jobs.
+
+**This is completely normal and does not mean your actions are broken.** To turn on schedules, set the desired variable under **Settings > Secrets and variables > Actions > Variables**.
+
+---
+
 ## Repository Structure
 
 ```
-.github/workflows/
-  deploy-migrations.yml          # Forward: Apply local migrations -> Supabase
-  capture-supabase-migrations.yml # Reverse: Capture dashboard schema drift -> local migration
-  backup-database.yml            # Backups: Weekly encrypted full DB backup
-  test-restore.yml               # DR: Monthly automated backup decryption & restore drill
-  lint-migrations.yml            # CI: Test migration syntax & execution in Docker
-  rls-security-audit.yml         # Security: Enforce Row Level Security (RLS) on PRs
-  promote-migrations.yml         # Release: Staging -> Production promotion pipeline
-  db-advisor.yml                 # Perf: Audit unindexed foreign keys & schema linter
-  generate-docs.yml              # Docs: Living schema markdown & Mermaid ER diagram
-  generate-types.yml             # DX: Generate TypeScript definitions (database.types.ts)
-  preview-database.yml           # Previews: Ephemeral PR database branch environments
-  drift-alert.yml                # Monitoring: Scheduled weekly schema drift detection
+.github/
+  ISSUE_TEMPLATE/                # Issue templates (bug report, feature request)
+  workflows/
+    deploy-migrations.yml        # Forward: Apply local migrations -> Supabase
+    capture-supabase-migrations.yml # Reverse: Capture dashboard schema drift -> local migration
+    backup-database.yml          # Backups: Weekly encrypted full DB backup
+    test-restore.yml             # DR: Monthly automated backup decryption & restore drill
+    lint-migrations.yml          # CI: Test migration syntax & execution in Docker
+    rls-security-audit.yml       # Security: Enforce Row Level Security (RLS) on PRs
+    promote-migrations.yml       # Release: Staging -> Production promotion pipeline
+    db-advisor.yml               # Perf: Audit unindexed foreign keys & schema linter
+    generate-docs.yml            # Docs: Living schema markdown & Mermaid ER diagram
+    generate-types.yml           # DX: Generate TypeScript definitions (database.types.ts)
+    preview-database.yml         # Previews: Ephemeral PR database branch environments
+    drift-alert.yml              # Monitoring: Scheduled weekly schema drift detection
 docs/
   schema.md                      # Auto-generated database schema & Mermaid ER diagram
+  runbook_baselining.md          # Adoption guide for existing databases
+  runbook_disaster_recovery.md   # Manual backup decryption and recovery drill guide
+  demo.md                        # Verification gallery with sanitized execution logs
 scripts/
   generate_schema_docs.py        # Introspection script for documentation generator
+  test_local_migrations.sh       # Local lifecycle integration test suite
+  test_backup_negative.sh        # Local negative recovery and decrypt drill suite
+  verify_restore_integrity.sh    # Post-restore database integrity assertions
 supabase/
   config.toml                    # Supabase CLI project configuration
   seed.sql                       # Sample seed data for local development
   migrations/                    # Version-controlled migration files (empty by default)
 types/
   database.types.ts              # Auto-generated TypeScript definitions
+CONTRIBUTING.md                  # Development setup and contribution guidelines
+LICENSE                          # MIT License
+SECURITY.md                      # Security policy and vulnerability disclosure
 ```
 
 ---
 
-## Workflow Reference & Capabilities Matrix
+## Workflow Reference
 
-The matrix below provides complete technical transparency across all 12 automated workflows:
+### Summary Matrix (12 Workflows)
+
+| Workflow | Purpose | Trigger |
+|---|---|---|
+| **Deploy Database Migrations** ([`deploy-migrations.yml`](.github/workflows/deploy-migrations.yml)) | Forward deployment with monotonic timestamp audit, pre-deploy safety backup snapshot, and TypeScript type sync | `workflow_dispatch` (confirmation `deploy`), `push` to `master` (if `AUTO_DEPLOY=true`) |
+| **Capture Schema Drift** ([`capture-supabase-migrations.yml`](.github/workflows/capture-supabase-migrations.yml)) | Reconciles dashboard changes by computing consolidated DDL diff against baseline in shadow Docker container | `workflow_dispatch` (confirmation `capture`) |
+| **Encrypted Database Backups** ([`backup-database.yml`](.github/workflows/backup-database.yml)) | Generates AES-256 encrypted `pg_dump` of `public` schema and data with SHA-256 integrity manifest | Schedule (Sunday 02:00 UTC), `workflow_dispatch` |
+| **Disaster Recovery Restore Drill** ([`test-restore.yml`](.github/workflows/test-restore.yml)) | Tests AES-256 decryptability, table inventory, row count restoration, relational queries, and 4 negative failure modes | Schedule (1st of month 03:00 UTC), `workflow_dispatch` |
+| **Fast PR Migration Linting** ([`lint-migrations.yml`](.github/workflows/lint-migrations.yml)) | PR checks for monotonic timestamps, syntax errors, destructive DDL, and transactional rollback (<15s) | `pull_request` (on `supabase/migrations/**`), `workflow_dispatch` |
+| **Row Level Security (RLS) Audit** ([`rls-security-audit.yml`](.github/workflows/rls-security-audit.yml)) | Audits RLS enablement, flags zero-policy lockouts, executes test queries as `anon`, `authenticated`, and `service_role` | `pull_request` (on `supabase/migrations/**`), `workflow_dispatch` |
+| **Multi-Environment Promotion** ([`promote-migrations.yml`](.github/workflows/promote-migrations.yml)) | Staging-to-production promotion pipeline with independent host validation, pre-deploy snapshots, and approval gates | `workflow_dispatch` |
+| **Database Performance Advisor** ([`db-advisor.yml`](.github/workflows/db-advisor.yml)) | Scans schema for unindexed foreign keys, tables missing primary keys, and runs `supabase db lint` | `pull_request`, `workflow_dispatch` |
+| **Living Schema Documentation** ([`generate-docs.yml`](.github/workflows/generate-docs.yml)) | Introspects schema tables/columns/relations and generates markdown documentation and interactive Mermaid ER diagrams | `push` to `master` (on `supabase/migrations/**`), `workflow_dispatch` |
+| **Automated TypeScript Types** ([`generate-types.yml`](.github/workflows/generate-types.yml)) | Generates TypeScript definitions directly from schema with empty-file commit prevention | `workflow_dispatch`, `workflow_call` (from deploy) |
+| **Ephemeral PR Database Previews** ([`preview-database.yml`](.github/workflows/preview-database.yml)) | Creates disposable preview database per PR, applies pending migrations, and tears down preview on merge/close | `pull_request`, `workflow_dispatch` |
+| **Scheduled Drift Alerting** ([`drift-alert.yml`](.github/workflows/drift-alert.yml)) | Audits remote database schema against committed migrations and opens GitHub Issue on divergence | Schedule (Monday 04:00 UTC), `workflow_dispatch` |
+
+<details>
+<summary><strong>Detailed Capabilities Matrix (Expanded 7-Column Technical Specification)</strong></summary>
 
 | Workflow Name & File | Trigger Events | Environment Type | Database Mutations | Required Secrets & Variables | Output Artifacts | Scope & Boundaries |
 |---|---|---|---|---|---|---|
@@ -199,6 +316,8 @@ The matrix below provides complete technical transparency across all 12 automate
 | **Automated TypeScript Types**<br/>([`.github/workflows/generate-types.yml`](.github/workflows/generate-types.yml)) | `workflow_dispatch`, `workflow_call` (from deploy) | Live Cloud (`SUPABASE_DB_URL`) | Read-only introspection; commits `types/database.types.ts` | `SUPABASE_DB_URL` | `types/database.types.ts` | Generates end-to-end TypeScript definitions directly from database schema with empty-file commit prevention. |
 | **Ephemeral PR Database Previews**<br/>([`.github/workflows/preview-database.yml`](.github/workflows/preview-database.yml)) | `pull_request`, `workflow_dispatch` | Supabase Cloud Branching or Ephemeral Docker | Disposable preview database only | `SUPABASE_ACCESS_TOKEN`, `SUPABASE_PROJECT_ID` (optional) | Step Summary preview report | Creates disposable preview database per PR, applies pending migrations, and tears down preview on merge/close. |
 | **Scheduled Drift Alerting**<br/>([`.github/workflows/drift-alert.yml`](.github/workflows/drift-alert.yml)) | `schedule` (Monday 04:00 UTC), `workflow_dispatch` | Live Cloud (`SUPABASE_DB_URL`) | Read-only dry-run (`supabase db pull`) | `SUPABASE_DB_URL` | GitHub Issue (on drift), Step Summary | Periodically checks if remote database schema has diverged from committed migration files. |
+
+</details>
 
 ---
 
@@ -253,57 +372,28 @@ Creates an encrypted application-schema backup (`public` schema structure, seque
 - **Zero-Trust Encryption**: Uses `postgres:17-alpine` Docker container to run `pg_dump`, streaming output directly into `gpg` with **AES-256 symmetric encryption** via secure file descriptor piping (`--passphrase-fd 3`).
 - **Clean Git**: Backups are stored as downloadable GitHub Actions Artifacts (retained for 90 days), preventing raw data from entering git history.
 
-#### Backup & Recovery Boundaries
-
-| Boundary Dimension | Scope & Behavior | Rationale / Prerequisite |
-|---|---|---|
-| **Included in Backup** | `public` schema tables, data rows, sequences, foreign keys, triggers, and custom functions | Captures all core business domain data and application state without triggering privilege errors. |
-| **Excluded: `auth` Schema** | GoTrue identities, encrypted passwords, sessions, refresh tokens, MFA credentials | Managed by Supabase GoTrue; requires superuser/bypassrls to dump directly. Must be exported via Supabase Management API (`/v1/projects/{ref}/users`) or admin scripts. |
-| **Excluded: `storage` Schema** | Storage bucket metadata and object tables (`storage.buckets`, `storage.objects`) | Underlying binary assets reside in S3-compatible object storage. Object storage must be replicated separately (e.g. via AWS CLI or rclone). |
-| **Excluded: `vault` Schema** | Encrypted secrets and KMS keys managed by `pgsodium` | Decryption keys reside in Supabase Key Management System. Master secrets must be stored in external secret managers (e.g. GitHub Secrets). |
-| **Excluded: Platform Schemas** | `graphql`, `realtime`, `pg_catalog`, `information_schema`, `supabase_functions` | Ephemeral or managed system schemas recreated automatically by the Supabase platform runtime. |
-
-> [!NOTE]
-> **Why `public` schema only?**
-> On hosted Supabase instances (and AWS RDS / PostgreSQL-as-a-Service generally), connection strings connect via standard project roles (e.g., `postgres` or connection poolers). These roles lack superuser privileges to dump platform-owned schemas without throwing permission violations. Restricting the automated snapshot to `--schema=public` ensures reliable, clean backups without permission failures.
-
-#### Enterprise Retention & Off-Site Storage Recommendations
-
-GitHub Actions Artifact Storage provides convenience for CI/CD drills and intermediate verification, but has architectural limitations for production compliance:
+#### Long-Term Retention & Off-Site Storage Recommendations
+GitHub Actions Artifact Storage provides convenience for CI/CD drills and intermediate verification, but has limitations:
 - **Retention Limits**: GitHub Actions artifacts automatically expire after a maximum of 90 days.
-- **Repository Coupling**: Artifacts are coupled to repository metadata and cannot be independently locked against accidental repository deletion or administrative pruning.
-- **Compliance Gaps**: Enterprise compliance frameworks (SOC 2, HIPAA, ISO 27001) frequently mandate multi-year immutable retention.
+- **Repository Coupling**: Artifacts are coupled to repository metadata and cannot be independently locked against accidental repository deletion.
 
-##### Recommended Production Architecture: Off-Site Cloud Storage
-
-For enterprise-grade disaster recovery, stream the encrypted output directly from the CI runner or cron agent into dedicated cloud object storage:
+##### Recommended Architecture: Off-Site Cloud Storage
+For long-term disaster recovery, stream the encrypted output directly from the CI runner or cron agent into dedicated cloud object storage:
 
 ```
 ┌────────────────────────┐      ┌─────────────────────────┐      ┌─────────────────────────┐
 │ Supabase PostgreSQL DB │ ───> │  AES-256 GPG Encryption │ ───> │ Immutable Object Store  │
 │  (pg_dump application) │      │ (Streaming Unix Pipe)   │      │ (AWS S3 / Cloudflare R2)│
 └────────────────────────┘      └─────────────────────────┘      └─────────────────────────┘
-                                                                               │
-                                                                   ┌───────────┴───────────┐
-                                                                   │ Object Lock (WORM)    │
-                                                                   │ Cross-Region Replic.  │
-                                                                   │ Lifecycle: 7 Years    │
-                                                                   └───────────────────────┘
 ```
 
-1. **WORM Immutability (Write-Once, Read-Many)**:
-   Enable **S3 Object Lock** in Compliance Mode or **GCS Bucket Lock** with retention locks. This prevents any entity—even cloud root administrators or compromised API keys—from deleting or tampering with database backups before the retention window expires.
-2. **Cross-Region Replication (CRR)**:
-   Replicate backup archives to a distinct geographical cloud region (e.g. `us-east-1` to `eu-central-1`) or a multi-cloud secondary provider (e.g. Cloudflare R2 or Wasabi) to eliminate single-cloud vendor risk.
-3. **Tamper-Evident SHA-256 Manifest**:
-   Every backup artifact generated by this repository includes a companion `manifest.sha256` and `manifest.json` file. Disaster recovery drills automatically compute and verify cryptographic hashes prior to decryption, guaranteeing detection of bit-rot, truncation, or hostile tampering.
-4. **Direct Cloud Stream Example**:
-   ```bash
-   docker run --rm postgres:17-alpine \
-     pg_dump "$SUPABASE_DB_URL" --schema=public --clean --if-exists --quote-all-identifiers \
-     | gpg --batch --yes --symmetric --cipher-algo AES256 --passphrase-fd 3 3<<< "$BACKUP_ENCRYPTION_KEY" \
-     | aws s3 cp - "s3://enterprise-db-backups/supabase/backup-$(date +%Y%m%d_%H%M%S).sql.gpg"
-   ```
+**Direct Cloud Stream Example**:
+```bash
+docker run --rm postgres:17-alpine \
+  pg_dump "$SUPABASE_DB_URL" --schema=public --clean --if-exists --quote-all-identifiers \
+  | gpg --batch --yes --symmetric --cipher-algo AES256 --passphrase-fd 3 3<<< "$BACKUP_ENCRYPTION_KEY" \
+  | aws s3 cp - "s3://my-db-backups/supabase/backup-$(date +%Y%m%d_%H%M%S).sql.gpg"
+```
 
 ---
 
@@ -333,9 +423,9 @@ Runs automatically on every Pull Request modifying `supabase/migrations/**`:
 | **Disaster Recovery Drill** | Ephemeral `postgres:17-alpine` Docker | Decrypted Application Data | Proves backup decryptability, table inventory, row restoration, index health, and relational queries. | `test-restore.yml`, `scripts/verify_restore_integrity.sh` |
 | **Behavioral RLS Audit** | Isolated PostgreSQL / Supabase Container | Active Runtime Security | Impersonates `anon`, `authenticated`, and `service_role` to verify positive access and cross-tenant isolation. | `rls-security-audit.yml`, `scripts/audit_rls_behavior.sql` |
 
-#### Guarantees & Known Limitations
+#### Guarantees & Platform Boundaries
 
-To provide technical transparency for senior engineering and architecture reviews, the table below delineates verified guarantees from platform prerequisites:
+The table below delineates automated guarantees in this repository versus platform boundaries:
 
 | Dimension | Automated Guarantee in Repository | Platform Boundary / Prerequisite |
 |---|---|---|
@@ -356,7 +446,7 @@ Enforces database security standards on Pull Requests:
 ---
 
 ### 7. Multi-Environment Promotion Pipeline (`promote-migrations.yml`)
-Enterprise staging-to-production release management:
+Staging-to-production release management:
 - First applies and verifies migrations in the `staging` environment.
 - Promotes to `production` with pre-migration backups at each stage and GitHub Environment protection.
 
@@ -391,15 +481,14 @@ Disposable preview databases for feature testing on Pull Requests:
 ---
 
 ### 12. Scheduled Drift Alerting (`drift-alert.yml`)
-Continuous compliance monitoring:
+Continuous drift monitoring:
 - Runs weekly on Monday at 04:00 UTC to detect uncaptured dashboard changes.
-- Alerts the team in GitHub Actions if production schema drifts from repository code.
+- Alerts the team in GitHub Actions if remote schema drifts from repository code.
 
 ---
 
-## Demonstration & Verification Gallery
+## Proof it works
 
-For platform engineers, hiring managers, and technical interviewers evaluating this repository:
 - **[Demonstration Gallery](docs/demo.md)**: Real, verified Markdown reports and execution evidence from green GitHub Actions pipeline runs:
   - Disaster recovery drill assertions (table inventory, primary/foreign keys, indexes, relational JOIN queries).
   - Row Level Security (RLS) active behavioral audit (`anon` rejection, `authenticated` tenant isolation, `service_role` bypass).
@@ -413,6 +502,18 @@ For platform engineers, hiring managers, and technical interviewers evaluating t
   # Execute automated negative backup and recovery tests
   ./scripts/test_backup_negative.sh
   ```
+
+---
+
+## Roadmap
+
+Planned enhancements and entry points for contributors:
+- [ ] **Direct S3 / Cloudflare R2 Backup Streaming**: Stream encrypted backups directly to external object storage with configurable retention policies, bypassing GitHub Actions artifact limits.
+- [ ] **Supabase Auth Export & Restore**: Dedicated workflow to export `auth.users` via the Supabase Management API and restore identities into test environments.
+- [ ] **Configurable Default Branch (`main` / `master`)**: Support arbitrary default branch names across all workflow triggers via repository variables or workflow call parameters.
+- [ ] **Interactive Slack / Discord Deployment Notifications**: Enriched webhook cards with diff summaries, migration timing, and rollback instructions.
+
+Looking to contribute? Check out our [CONTRIBUTING.md](CONTRIBUTING.md) guide and browse issues labeled [`good first issue`](https://github.com/AniruthKarthik/supabase-gitops/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22).
 
 ---
 
@@ -438,4 +539,4 @@ supabase stop
 
 ## License
 
-MIT License. Free to use for personal, academic, and commercial projects.
+MIT License. Free to use for personal, academic, and commercial projects. See [LICENSE](LICENSE) for details.
