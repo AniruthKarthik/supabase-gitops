@@ -1,0 +1,174 @@
+name: Database keep-alive & health sentinel
+
+on:
+  schedule:
+    - cron: '0 6 */3 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supabase-database-keepalive
+  cancel-in-progress: false
+
+jobs:
+  keepalive:
+    name: Check database health & keep-alive
+    if: github.event_name != 'schedule' || vars.ENABLE_ALL_SCHEDULES == 'true' || vars.ENABLE_SCHEDULED_KEEPALIVE == 'true' || vars.ENABLE_DATABASE_KEEPALIVE == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Verify configuration
+        run: |
+          set -euo pipefail
+
+          if [ -z "${SUPABASE_DB_URL:-}" ]; then
+            echo "::error::SUPABASE_DB_URL secret is not configured. Please add your Supabase connection string to repository secrets."
+            {
+              echo "## Database Keep-Alive & Health Sentinel"
+              echo ""
+              echo "![Status](https://img.shields.io/badge/Database_Status-Missing_Configuration-orange)"
+              echo ""
+              echo "> ⚠️ **Configuration Error**: The \`SUPABASE_DB_URL\` secret is not configured in this repository."
+              echo ""
+              echo "Please configure \`SUPABASE_DB_URL\` in **Settings > Secrets and variables > Actions > New repository secret**."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+
+      - name: Pull PostgreSQL container image
+        run: |
+          set -euo pipefail
+          docker pull postgres:17-alpine
+
+      - name: Probe database health & keep-alive
+        id: probe
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          set -euo pipefail
+
+          echo "Initiating database keep-alive heartbeat probe with PGCONNECT_TIMEOUT=15..."
+          START_MS=$(date +%s%3N)
+
+          set +e
+          HEARTBEAT_RAW=$(docker run --rm \
+            -e PGCONNECT_TIMEOUT=15 \
+            postgres:17-alpine \
+            psql "$SUPABASE_DB_URL" \
+              --tuples-only \
+              --no-align \
+              --field-separator='|' \
+              -c "SELECT 'PONG', now()::text, count(*) FROM information_schema.tables WHERE table_schema = 'public';" 2>&1)
+          PROBE_EXIT=$?
+          END_MS=$(date +%s%3N)
+          LATENCY_MS=$((END_MS - START_MS))
+          set -e
+
+          if [ "$PROBE_EXIT" -ne 0 ]; then
+            echo "::error::Database probe failed (exit code $PROBE_EXIT). Database may be paused or offline."
+            {
+              echo "## Database Keep-Alive & Health Sentinel"
+              echo ""
+              echo "![Status](https://img.shields.io/badge/Database_Status-Unhealthy-critical)"
+              echo ""
+              echo "> 🔴 **Database Keep-Alive Failed / Connection Unavailable**"
+              echo ""
+              echo "The sentinel probe failed to connect within the 15-second timeout window. Your Supabase database may be paused due to the 7-day inactivity rule, network-isolated, or encountering credential errors."
+              echo ""
+              echo "### Health Metrics"
+              echo "| Metric | Value |"
+              echo "|---|---|"
+              echo "| **Health Status** | 🔴 Unhealthy / Connection Failed |"
+              echo "| **Connection Latency** | ${LATENCY_MS} ms (timeout/failure) |"
+              echo "| **Exit Code** | \`${PROBE_EXIT}\` |"
+              echo "| **Execution Trigger** | \`${{ github.event_name }}\` |"
+              echo ""
+              echo "### Captured Diagnostic Output"
+              echo '```text'
+              echo "$HEARTBEAT_RAW"
+              echo '```'
+              echo ""
+              echo "### Troubleshooting & Resuming Paused Database"
+              echo "1. **Check Project Status**: Log in to the [Supabase Dashboard](https://supabase.com/dashboard) and check if your project displays **Paused**."
+              echo "2. **Restore / Resume Project**: Click **Restore project** in the Supabase Dashboard. Supabase will provision the instance and resume database services within 1–2 minutes."
+              echo "3. **Verify Connection String**: Ensure \`SUPABASE_DB_URL\` in **Settings > Secrets and variables > Actions** uses direct connection on port 5432 or session pooler mode."
+              echo "4. **Re-run Sentinel**: Once the database is active, manually trigger this workflow via **Actions > Database keep-alive & health sentinel > Run workflow** to verify health."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit "$PROBE_EXIT"
+          fi
+
+          # Extract Heartbeat values: PONG | timestamp | count
+          PONG=$(echo "$HEARTBEAT_RAW" | awk -F'|' '{print $1}' | tr -d '[:space:]')
+          SERVER_TIME=$(echo "$HEARTBEAT_RAW" | awk -F'|' '{print $2}' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+          TABLE_COUNT=$(echo "$HEARTBEAT_RAW" | awk -F'|' '{print $3}' | tr -d '[:space:]')
+          TABLE_COUNT=${TABLE_COUNT:-0}
+
+          # Fetch Online Public Table Inventory
+          TABLE_INVENTORY_RAW=$(docker run --rm \
+            -e PGCONNECT_TIMEOUT=15 \
+            postgres:17-alpine \
+            psql "$SUPABASE_DB_URL" \
+              --tuples-only \
+              --no-align \
+              -c "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name;" 2>&1 || true)
+
+          echo "Database probe successful."
+          echo "Heartbeat: $PONG"
+          echo "Latency: ${LATENCY_MS} ms"
+          echo "Server Timestamp: $SERVER_TIME"
+          echo "Public Table Count: $TABLE_COUNT"
+
+          {
+            echo "## Database Keep-Alive & Health Sentinel"
+            echo ""
+            echo "![Status](https://img.shields.io/badge/Database_Status-Healthy-brightgreen)"
+            echo ""
+            echo "Database responded to heartbeat probe and active query was logged. Supabase inactivity counter has been reset."
+            echo ""
+            echo "### Health Metrics"
+            echo "| Metric | Value |"
+            echo "|---|---|"
+            echo "| **Health Status** | 🟢 Healthy / Online |"
+            echo "| **Heartbeat Probe** | \`${PONG}\` |"
+            echo "| **Connection Latency** | ${LATENCY_MS} ms |"
+            echo "| **Server Timestamp** | \`${SERVER_TIME}\` |"
+            echo "| **Public Table Count** | ${TABLE_COUNT} |"
+            echo "| **Inactivity Counter** | Reset (Active query registered) |"
+            echo "| **Execution Trigger** | \`${{ github.event_name }}\` |"
+            echo ""
+            echo "### Online Public Table Inventory"
+            if [ -n "$TABLE_INVENTORY_RAW" ] && [ "$TABLE_COUNT" -gt 0 ] 2>/dev/null; then
+              echo "| # | Table Name | Schema |"
+              echo "|---|---|---|"
+              IDX=1
+              while IFS= read -r tbl; do
+                tbl_clean=$(echo "$tbl" | tr -d '[:space:]')
+                [ -z "$tbl_clean" ] && continue
+                echo "| $IDX | \`$tbl_clean\` | \`public\` |"
+                IDX=$((IDX + 1))
+              done <<< "$TABLE_INVENTORY_RAW"
+            else
+              echo "*No public tables found in \`public\` schema.*"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Send webhook notification
+        if: always()
+        env:
+          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+        run: |
+          set -euo pipefail
+          if [ -n "${WEBHOOK_URL:-}" ]; then
+            STATUS="${{ job.status }}"
+            curl -s -X POST -H "Content-Type: application/json" \
+              -d "{\"text\": \"Database Keep-Alive Sentinel: ${STATUS} on ${{ github.repository }} (Run ${{ github.run_id }})\", \"status\": \"${STATUS}\", \"run_id\": \"${{ github.run_id }}\", \"repository\": \"${{ github.repository }}\"}" \
+              "$WEBHOOK_URL" || true
+          fi

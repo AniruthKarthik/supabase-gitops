@@ -12,6 +12,7 @@ Provides reliable bi-directional synchronization between GitHub and Supabase:
 - **Performance & index advisor**: Automated linting for unindexed foreign keys, missing primary keys, and schema anti-patterns.
 - **Living documentation**: Auto-generated schema documentation and interactive Mermaid ER diagrams.
 - **Developer experience**: Automated TypeScript type contract synchronization and ephemeral PR database preview environments.
+- **Database keep-alive & health sentinel**: Automated periodic ping preventing Supabase Free Tier inactivity pauses and measuring connection latency.
 
 > 📖 **Operator Runbooks & Demonstration Assets:**
 > - [Database Baselining Runbook](docs/runbook_baselining.md) — Step-by-step existing project adoption guide.
@@ -225,6 +226,7 @@ To activate automated recurring runs, navigate to **Settings > Secrets and varia
 | `ENABLE_SCHEDULED_BACKUPS` | Set to `true` to enable automated encrypted backups | Every Sunday at 02:00 UTC |
 | `ENABLE_SCHEDULED_DRIFT_ALERTS` | Set to `true` to enable automated schema drift audits | Every Monday at 04:00 UTC |
 | `ENABLE_SCHEDULED_RESTORE_DRILLS` | Set to `true` to enable automated disaster recovery drills | 1st of every month at 03:00 UTC |
+| `ENABLE_SCHEDULED_KEEPALIVE` | Set to `true` to enable automated database keep-alive & health pings | Every 3 days at 06:00 UTC |
 
 ---
 
@@ -233,7 +235,7 @@ To activate automated recurring runs, navigate to **Settings > Secrets and varia
 ### Why do my scheduled runs show "skipped"?
 By default, **all automated schedules are turned off** until repository variables are explicitly created.
 
-GitHub Actions evaluates cron schedules defined in workflow files automatically. When a scheduled trigger executes, the workflow checks whether its activation variable (such as `ENABLE_SCHEDULED_BACKUPS` or `ENABLE_ALL_SCHEDULES`) is set to `true`. Because variables are unset by default, the workflow logs that schedules are disabled and skips subsequent jobs.
+GitHub Actions evaluates cron schedules defined in workflow files automatically. When a scheduled trigger executes, the workflow checks whether its activation variable (such as `ENABLE_SCHEDULED_BACKUPS`, `ENABLE_SCHEDULED_KEEPALIVE`, or `ENABLE_ALL_SCHEDULES`) is set to `true`. Because variables are unset by default, the workflow logs that schedules are disabled and skips subsequent jobs.
 
 **This is completely normal and does not mean your actions are broken.** To turn on schedules, set the desired variable under **Settings > Secrets and variables > Actions > Variables**.
 
@@ -257,6 +259,7 @@ GitHub Actions evaluates cron schedules defined in workflow files automatically.
     generate-types.yml           # DX: Generate TypeScript definitions (database.types.ts)
     preview-database.yml         # Previews: Ephemeral PR database branch environments
     drift-alert.yml              # Monitoring: Scheduled weekly schema drift detection
+    database-keepalive.yml       # Sentinel: Keep Supabase Free Tier active & monitor health
 docs/
   schema.md                      # Auto-generated database schema & Mermaid ER diagram
   runbook_baselining.md          # Adoption guide for existing databases
@@ -282,7 +285,7 @@ SECURITY.md                      # Security policy and vulnerability disclosure
 
 ## Workflow Reference
 
-### Summary Matrix (12 Workflows)
+### Summary Matrix (13 Workflows)
 
 | Workflow | Purpose | Trigger |
 |---|---|---|
@@ -298,6 +301,7 @@ SECURITY.md                      # Security policy and vulnerability disclosure
 | **Automated TypeScript Types** ([`generate-types.yml`](.github/workflows/generate-types.yml)) | Generates TypeScript definitions directly from schema with empty-file commit prevention | `workflow_dispatch`, `workflow_call` (from deploy) |
 | **Ephemeral PR Database Previews** ([`preview-database.yml`](.github/workflows/preview-database.yml)) | Creates disposable preview database per PR, applies pending migrations, and tears down preview on merge/close | `pull_request`, `workflow_dispatch` |
 | **Scheduled Drift Alerting** ([`drift-alert.yml`](.github/workflows/drift-alert.yml)) | Audits remote database schema against committed migrations and opens GitHub Issue on divergence | Schedule (Monday 04:00 UTC), `workflow_dispatch` |
+| **Database Keep-Alive Sentinel** ([`database-keepalive.yml`](.github/workflows/database-keepalive.yml)) | Prevents Supabase Free Tier 7-day inactivity pause, measures latency, and inventories public tables | Schedule (Every 3 days 06:00 UTC), `workflow_dispatch` |
 
 <details>
 <summary><strong>Detailed Capabilities Matrix (Expanded 7-Column Technical Specification)</strong></summary>
@@ -316,6 +320,7 @@ SECURITY.md                      # Security policy and vulnerability disclosure
 | **Automated TypeScript Types**<br/>([`.github/workflows/generate-types.yml`](.github/workflows/generate-types.yml)) | `workflow_dispatch`, `workflow_call` (from deploy) | Live Cloud (`SUPABASE_DB_URL`) | Read-only introspection; commits `types/database.types.ts` | `SUPABASE_DB_URL` | `types/database.types.ts` | Generates end-to-end TypeScript definitions directly from database schema with empty-file commit prevention. |
 | **Ephemeral PR Database Previews**<br/>([`.github/workflows/preview-database.yml`](.github/workflows/preview-database.yml)) | `pull_request`, `workflow_dispatch` | Supabase Cloud Branching or Ephemeral Docker | Disposable preview database only | `SUPABASE_ACCESS_TOKEN`, `SUPABASE_PROJECT_ID` (optional) | Step Summary preview report | Creates disposable preview database per PR, applies pending migrations, and tears down preview on merge/close. |
 | **Scheduled Drift Alerting**<br/>([`.github/workflows/drift-alert.yml`](.github/workflows/drift-alert.yml)) | `schedule` (Monday 04:00 UTC), `workflow_dispatch` | Live Cloud (`SUPABASE_DB_URL`) | Read-only dry-run (`supabase db pull`) | `SUPABASE_DB_URL` | GitHub Issue (on drift), Step Summary | Periodically checks if remote database schema has diverged from committed migration files. |
+| **Database Keep-Alive Sentinel**<br/>([`.github/workflows/database-keepalive.yml`](.github/workflows/database-keepalive.yml)) | `schedule` (Every 3 days 06:00 UTC), `workflow_dispatch` | Live Cloud (`SUPABASE_DB_URL`) via ephemeral Docker | Read-only heartbeat query (`SELECT 'PONG' ...`) | `SUPABASE_DB_URL` | Step Summary health report & metrics | Resets Supabase 7-day inactivity counter, measures connection latency, inventories public tables. |
 
 </details>
 
@@ -484,6 +489,16 @@ Disposable preview databases for feature testing on Pull Requests:
 Continuous drift monitoring:
 - Runs weekly on Monday at 04:00 UTC to detect uncaptured dashboard changes.
 - Alerts the team in GitHub Actions if remote schema drifts from repository code.
+
+---
+
+### 13. Database Keep-Alive & Health Sentinel (`database-keepalive.yml`)
+Prevents Supabase Free Tier database pausing and continuously monitors remote availability:
+- **Trigger**: Every 3 days at 06:00 UTC (`0 6 */3 * *`) or manual on-demand trigger (`workflow_dispatch`).
+- **Inactivity Pause Prevention**: On Supabase Free Tier, projects are automatically paused after 7 consecutive days of zero query activity. When paused, connections fail with `FATAL: (EAUTHQUERY) authentication query failed: connection to database not available`, causing downstream backup and deploy pipelines to fail. This sentinel executes an active heartbeat query every 3 days to reset the inactivity timer.
+- **Network Latency & Server Telemetry**: Measures network round-trip connection latency in milliseconds and records remote server UTC timestamps.
+- **Table Inventory & Health Verification**: Queries `information_schema.tables` for `public` schema tables, logging an inventory of online tables in the Step Summary.
+- **Automated Failure Diagnostics**: Enforces a strict 15-second connection timeout (`PGCONNECT_TIMEOUT=15`). If the database is paused or unreachable, it captures diagnostic error output and writes step-by-step unpausing and restoration instructions directly to `$GITHUB_STEP_SUMMARY`.
 
 ---
 

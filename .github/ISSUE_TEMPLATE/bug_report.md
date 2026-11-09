@@ -22,6 +22,7 @@ A clear and concise description of what the bug is.
 - [ ] `generate-types.yml`
 - [ ] `preview-database.yml`
 - [ ] `drift-alert.yml`
+- [ ] `database-keepalive.yml`
 - [ ] Local script (e.g., `scripts/test_local_migrations.sh`)
 - [ ] Other
 
